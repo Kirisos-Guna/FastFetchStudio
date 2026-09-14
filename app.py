@@ -53,6 +53,7 @@ LAUNCHER_PATH = FF_DIR / "fastfetch-random.ps1"
 CONFIG_PATH = FF_DIR / "config.jsonc"
 BACKUP_PATH = FF_DIR / "config.backup.jsonc"
 PREVIEW_CACHE = GUI_DIR / "preview.sixel"
+SIXELS_DIR = FF_DIR / "sixels"
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 
@@ -239,7 +240,9 @@ def build_config_json(st: dict, accent: str) -> dict:
     mods.append("break")
     return {
         "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
-        "logo": {"type": "none", "padding": {"top": 0, "left": 3, "right": 6}},
+        # NOTE: no "logo" key here on purpose - fastfetch gives the config's
+        # logo section precedence over --logo on the command line, so any
+        # logo entry (even "none") would suppress the launcher's image logo.
         "display": {"separator": st.get("separator", " : ")},
         "modules": mods,
     }
@@ -300,18 +303,20 @@ $ffRoot   = Join-Path $env:USERPROFILE '.config\fastfetch'
 $ffExe    = Join-Path $env:USERPROFILE '.local\bin\fastfetch.exe'
 if (-not (Test-Path $ffExe)) { $ffExe = 'fastfetch.exe' }
 $themes   = @(Get-ChildItem -Path (Join-Path $ffRoot 'themes') -Filter 'theme-*.jsonc' -File -ErrorAction SilentlyContinue)
+$sixels = @(Get-ChildItem -Path (Join-Path $ffRoot 'sixels') -Filter '*.sixel' -File -ErrorAction SilentlyContinue)
 $pngDirs  = @((Join-Path $ffRoot 'pngs'), (Join-Path $ffRoot 'images'))
 $pngs     = @($pngDirs | ForEach-Object { Get-ChildItem -Path $_ -Filter '*.png' -File -Recurse -ErrorAction SilentlyContinue } | Sort-Object FullName -Unique)
 $statePath = Join-Path $ffRoot 'gui\studio-state.json'
 
-$randLogo = $true; $randTheme = $true; $freq = 'every'; $w = @@W@@; $h = @@H@@
+$randLogo = $true; $randTheme = $true; $freq = 'every'; $w = @@W@@; $h = @@H@@; $defaultImg = ''
 if (Test-Path $statePath) {
     try {
         $s = Get-Content $statePath -Raw | ConvertFrom-Json
-        $randLogo  = [bool]$s.randomLogo
-        $randTheme = [bool]$s.randomTheme
-        $freq = [string]$s.frequency
+        $randLogo   = [bool]$s.randomLogo
+        $randTheme  = [bool]$s.randomTheme
+        $freq       = [string]$s.frequency
         $w = [int]$s.logWidth; $h = [int]$s.logHeight
+        if ($s.defaultImage) { $defaultImg = [string]$s.defaultImage }
     } catch {}
 }
 
@@ -331,29 +336,43 @@ if ($randTheme -and $themes.Count -gt 0) {
 }
 
 $logoArg = @()
-if ($randLogo -and $pngs.Count -gt 0) {
-    $png = Get-Random -InputObject $pngs
-    # Only attempt image protocols in terminals that can render them:
-    # Windows Terminal sets WT_SESSION; WezTerm sets TERM_PROGRAM=WezTerm.
-    # Classic conhost supports neither - skip straight to the fallback logo.
-    if ($env:WT_SESSION) {
-        $logoArg = @('--logo-type', 'sixel', '--logo', $png.FullName,
-                     '--logo-width', $w, '--logo-height', $h)
-    } elseif ($env:TERM_PROGRAM -eq 'WezTerm') {
-        $logoArg = @('--logo-type', 'kitty-direct', '--logo', $png.FullName,
-                     '--logo-width', $w, '--logo-height', $h)
+# Only attempt image protocols in terminals that can render them:
+# Windows Terminal sets WT_SESSION; WezTerm sets TERM_PROGRAM=WezTerm.
+# Classic conhost supports neither - skip straight to the fallback logo.
+# The .sixel files are pre-encoded by FastFetch Studio (this fastfetch build
+# cannot encode PNG to sixel itself); fastfetch passes the bytes through.
+if ($env:WT_SESSION -and $sixels.Count -gt 0) {
+    $six = $null
+    if (-not $randLogo -and $defaultImg) {
+        $stem = [IO.Path]::GetFileNameWithoutExtension($defaultImg)
+        $six = $sixels | Where-Object { $_.BaseName -ieq $stem } | Select-Object -First 1
     }
+    if (-not $six) { $six = Get-Random -InputObject $sixels }
+    # 'raw' passes the pre-encoded bytes straight through; width/height tell
+    # fastfetch the cell size so the fetch is drawn beside (not below) the image.
+    $logoArg = @('--logo-type', 'raw', '--logo', $six.FullName,
+                 '--logo-width', $w, '--logo-height', $h)
+} elseif ($env:TERM_PROGRAM -eq 'WezTerm' -and $pngs.Count -gt 0) {
+    $png = $null
+    if (-not $randLogo -and $defaultImg -and (Test-Path -LiteralPath $defaultImg)) {
+        $png = Get-Item -LiteralPath $defaultImg
+    }
+    if (-not $png) { $png = Get-Random -InputObject $pngs }
+    $logoArg = @('--logo-type', 'kitty-direct', '--logo', $png.FullName,
+                 '--logo-width', $w, '--logo-height', $h)
 }
+
+$colorArgs = @()
+if ($accent) { $colorArgs = @('--logo-color-1', $accent, '--logo-color-2', $accent) }
 
 & $ffExe @themeArg @logoArg
 if ($LASTEXITCODE -ne 0 -and $logoArg.Count -gt 0) {
-    & $ffExe @themeArg --logo 'Windows11'
+    # Image attempt failed - fall back to the built-in logo (accent-tinted).
+    & $ffExe @themeArg --logo 'Windows11' @colorArgs
 }
 if ($logoArg.Count -eq 0) {
     # No image support (e.g. classic conhost): tint the built-in ASCII logo
     # with this theme's accent so the look still changes every run.
-    $colorArgs = @()
-    if ($accent) { $colorArgs = @('--logo-color-1', $accent, '--logo-color-2', $accent) }
     & $ffExe @themeArg --logo 'Windows11' @colorArgs
 }
 """
@@ -371,27 +390,131 @@ def profile_snippet() -> str:
 
 
 def apply_all(st: dict) -> str:
-    """Backup config, write themes + launcher, persist state. Returns summary."""
+    """Backup config, encode sixels, write themes + launcher, persist state."""
     GUI_DIR.mkdir(parents=True, exist_ok=True)
     if CONFIG_PATH.exists() and not BACKUP_PATH.exists():
         shutil.copyfile(CONFIG_PATH, BACKUP_PATH)
+    sixels = ensure_sixels(st)
     themes = generate_theme_files(st)
     generate_launcher(st)
     save_state(st)
-    return f"{len(themes)} themes + launcher written"
+    return f"{len(themes)} themes + {len(sixels)} sixels + launcher written"
+
+
+# --------------------------------------------------------------------------- sixel
+#
+# This fastfetch build cannot encode PNG to sixel itself (it silently falls
+# back to the built-in ASCII logo), and Pillow has no SIXEL plugin. So we
+# pre-encode each gallery image to a .sixel file and let fastfetch pass the
+# bytes straight through - the same approach as the original logo.sixel setup.
+
+def encode_sixel(im: "Image.Image") -> bytes:
+    """Encode an RGB PIL image to sixel bytes (ESC Pq ... ESC \\)."""
+    im = im.convert("RGB")
+    if im.mode != "P":
+        im = im.quantize(colors=256, method=Image.MEDIANCUT).convert("RGB")
+    w, h = im.size
+    px = im.load()
+
+    colors: dict[tuple[int, int, int], int] = {}
+    bands: list[dict[int, list[int]]] = []   # per 6-row band: colorIdx -> [bitmask per row]
+    for by in range(0, h, 6):
+        rows = min(6, h - by)
+        d: dict[int, list[int]] = {}
+        for r in range(rows):
+            base = by + r
+            for x in range(w):
+                c = px[x, base]
+                idx = colors.setdefault(c, len(colors))
+                mask = d.get(idx)
+                if mask is None:
+                    mask = [0] * rows
+                    d[idx] = mask
+                mask[r] |= 1 << x
+        bands.append(d)
+
+    items = sorted(colors.items())            # [(rgb, idx)] sorted by color
+
+    out = bytearray(b"\x1bPq\"1;1;%d;%d" % (w, h))
+    for i, (rgb, _) in enumerate(items):
+        out += b"#%d;2;%d;%d;%d" % (i, rgb[0], rgb[1], rgb[2])
+
+    for d in bands:
+        out += b"$"
+        rows_n = max((len(m) for m in d.values()), default=0)
+        for i, (_, idx) in enumerate(items):
+            masks = d.get(idx)
+            if masks is None:
+                continue
+            out += b"#%d" % i
+            for r in range(rows_n):
+                bits = masks[r] if r < len(masks) else 0
+                col = 0
+                while col < w:
+                    six = 0
+                    # build one char, then extend the run while chars repeat
+                    for r6 in range(6):
+                        if bits >> col & 1:
+                            six |= 1 << r6
+                    ch = 0x3F + six
+                    run = 1
+                    col += 1
+                    while col < w:
+                        nxt = 0
+                        for r6 in range(6):
+                            if bits >> col & 1:
+                                nxt |= 1 << r6
+                        if 0x3F + nxt == ch:
+                            run += 1
+                            col += 1
+                        else:
+                            break
+                    if run > 3:
+                        out += b"!%d%s" % (run, bytes([ch]))
+                    else:
+                        out += bytes([ch]) * run
+        out += b"-"
+    out += b"\x1b\\"
+    return bytes(out)
+
+
+def ensure_sixels(st: dict) -> list[Path]:
+    """Encode every gallery image to sixels\\*.sixel (fastfetch consumes these)."""
+    if not HAVE_PIL:
+        return []
+    SIXELS_DIR.mkdir(parents=True, exist_ok=True)
+    cells_w = int(st.get("logWidth", 28))
+    cells_h = int(st.get("logHeight", 24))
+    written = []
+    for g in st.get("gallery", []):
+        src = Path(g.get("path", ""))
+        if not src.exists():
+            continue
+        gw = int(g.get("w", cells_w)); gh = int(g.get("h", cells_h))
+        key = re.sub(r"[^A-Za-z0-9]+", "-", src.stem).strip("-") or "img"
+        dst = SIXELS_DIR / f"{key}.sixel"
+        try:
+            if not dst.exists() or dst.stat().st_mtime < src.stat().st_mtime:
+                with Image.open(src) as im:
+                    im = im.convert("RGB").resize((gw * 10, gh * 20), Image.LANCZOS)
+                dst.write_bytes(encode_sixel(im))
+            written.append(dst)
+        except Exception:
+            continue
+    return written
 
 
 def write_preview_sixel(st: dict, image_path: str) -> Path | None:
-    """Render the chosen image to a .sixel file with Pillow (background kept)."""
+    """Encode the chosen image to a .sixel file for the terminal preview."""
     if not HAVE_PIL or not image_path or not Path(image_path).exists():
         return None
     cells_w = int(st.get("logWidth", 28))
     cells_h = int(st.get("logHeight", 24))
     try:
         with Image.open(image_path) as im:
-            im = im.convert("RGB")
-            im = im.resize((cells_w * 10, cells_h * 20), Image.LANCZOS)
-            im.save(PREVIEW_CACHE, "SIXEL")
+            im = im.convert("RGB").resize((cells_w * 10, cells_h * 20), Image.LANCZOS)
+        PREVIEW_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        PREVIEW_CACHE.write_bytes(encode_sixel(im))
         return PREVIEW_CACHE
     except Exception:
         return None
@@ -407,7 +530,7 @@ def spawn_terminal_preview(st: dict, image_path: str) -> tuple[bool, str]:
     ff = "$env:USERPROFILE\\.local\\bin\\fastfetch.exe"
     ps = "$env:WT_SESSION='set-by-wt'; "
     if sixel:
-        ps += (f"& \"{ff}\" --config '{theme}' --logo-type sixel "
+        ps += (f"& \"{ff}\" --config '{theme}' --logo-type raw "
                f"--logo '{sixel}' --logo-width {st.get('logWidth', 28)} "
                f"--logo-height {st.get('logHeight', 24)}")
     else:
@@ -451,6 +574,17 @@ def selftest() -> int:
                 return 1
             if isinstance(fmt, str) and fmt.startswith("\x1b[38;2;") is False and "\x1b[" in fmt:
                 print(f"selftest: FAIL {t.name} has non-truecolor ESC sequence")
+                return 1
+        # Regression guard: a config-level logo section (even "none") overrides
+        # the CLI --logo and silently kills the image logo.
+        if "logo" in data:
+            print(f"selftest: FAIL {t.name} contains a logo section (suppresses CLI --logo)")
+            return 1
+        # Regression guard: every gallery image must have an encoded sixel.
+        for g in st.get("gallery", []):
+            key = re.sub(r"[^A-Za-z0-9]+", "-", Path(g["path"]).stem).strip("-") or "img"
+            if not (SIXELS_DIR / f"{key}.sixel").exists():
+                print(f"selftest: FAIL missing sixel for {Path(g['path']).name}")
                 return 1
     print(f"selftest: {summary}; launcher={'ok' if LAUNCHER_PATH.exists() else 'MISSING'}")
     return 0 if ok else 1
@@ -793,7 +927,7 @@ class App(tk.Tk):
                   font="TkDefaultFont 10 bold").pack(anchor="w", pady=(0, 10))
         self.rand_logo = tk.BooleanVar(value=STATE.get("randomLogo", True))
         self.rand_theme = tk.BooleanVar(value=STATE.get("randomTheme", True))
-        ttk.Checkbutton(f, text="Random logo (image from gallery)", variable=self.rand_logo,
+        ttk.Checkbutton(f, text="Random logo (off = use default image)", variable=self.rand_logo,
                         command=self._random_changed).pack(anchor="w", pady=2)
         ttk.Checkbutton(f, text="Random color theme (8 palettes generated from your colors)",
                         variable=self.rand_theme, command=self._random_changed).pack(anchor="w", pady=2)
