@@ -42,6 +42,12 @@ try:
 except ImportError:
     HAVE_PIL = False
 
+try:
+    from sixel_codec import decode_sixel_pixels, encode_sixel, fit_image_cells
+    HAVE_SIXEL = True
+except Exception:
+    HAVE_SIXEL = False
+
 # --------------------------------------------------------------------------- paths
 USER = Path(os.environ.get("USERPROFILE", str(Path.home())))
 FF_DIR = USER / ".config" / "fastfetch"
@@ -408,81 +414,13 @@ def apply_all(st: dict) -> str:
 # pre-encode each gallery image to a .sixel file and let fastfetch pass the
 # bytes straight through - the same approach as the original logo.sixel setup.
 
-def encode_sixel(im: "Image.Image") -> bytes:
-    """Encode an RGB PIL image to sixel bytes (ESC Pq ... ESC \\)."""
-    im = im.convert("RGB")
-    if im.mode != "P":
-        im = im.quantize(colors=256, method=Image.MEDIANCUT).convert("RGB")
-    w, h = im.size
-    px = im.load()
-
-    colors: dict[tuple[int, int, int], int] = {}
-    bands: list[dict[int, list[int]]] = []   # per 6-row band: colorIdx -> [bitmask per row]
-    for by in range(0, h, 6):
-        rows = min(6, h - by)
-        d: dict[int, list[int]] = {}
-        for r in range(rows):
-            base = by + r
-            for x in range(w):
-                c = px[x, base]
-                idx = colors.setdefault(c, len(colors))
-                mask = d.get(idx)
-                if mask is None:
-                    mask = [0] * rows
-                    d[idx] = mask
-                mask[r] |= 1 << x
-        bands.append(d)
-
-    items = sorted(colors.items())            # [(rgb, idx)] sorted by color
-
-    out = bytearray(b"\x1bPq\"1;1;%d;%d" % (w, h))
-    for i, (rgb, _) in enumerate(items):
-        out += b"#%d;2;%d;%d;%d" % (i, rgb[0], rgb[1], rgb[2])
-
-    for d in bands:
-        out += b"$"
-        rows_n = max((len(m) for m in d.values()), default=0)
-        for i, (_, idx) in enumerate(items):
-            masks = d.get(idx)
-            if masks is None:
-                continue
-            out += b"#%d" % i
-            for r in range(rows_n):
-                bits = masks[r] if r < len(masks) else 0
-                col = 0
-                while col < w:
-                    six = 0
-                    # build one char, then extend the run while chars repeat
-                    for r6 in range(6):
-                        if bits >> col & 1:
-                            six |= 1 << r6
-                    ch = 0x3F + six
-                    run = 1
-                    col += 1
-                    while col < w:
-                        nxt = 0
-                        for r6 in range(6):
-                            if bits >> col & 1:
-                                nxt |= 1 << r6
-                        if 0x3F + nxt == ch:
-                            run += 1
-                            col += 1
-                        else:
-                            break
-                    if run > 3:
-                        out += b"!%d%s" % (run, bytes([ch]))
-                    else:
-                        out += bytes([ch]) * run
-        out += b"-"
-    out += b"\x1b\\"
-    return bytes(out)
-
-
 def ensure_sixels(st: dict) -> list[Path]:
     """Encode every gallery image to sixels\\*.sixel (fastfetch consumes these)."""
-    if not HAVE_PIL:
+    if not (HAVE_PIL and HAVE_SIXEL):
         return []
     SIXELS_DIR.mkdir(parents=True, exist_ok=True)
+    for stale in SIXELS_DIR.glob('*.sixel'):
+        stale.unlink()   # never leave stale/broken encodes from older versions
     cells_w = int(st.get("logWidth", 28))
     cells_h = int(st.get("logHeight", 24))
     written = []
@@ -494,10 +432,8 @@ def ensure_sixels(st: dict) -> list[Path]:
         key = re.sub(r"[^A-Za-z0-9]+", "-", src.stem).strip("-") or "img"
         dst = SIXELS_DIR / f"{key}.sixel"
         try:
-            if not dst.exists() or dst.stat().st_mtime < src.stat().st_mtime:
-                with Image.open(src) as im:
-                    im = im.convert("RGB").resize((gw * 10, gh * 20), Image.LANCZOS)
-                dst.write_bytes(encode_sixel(im))
+            with Image.open(src) as im:
+                dst.write_bytes(encode_sixel(fit_image_cells(im, gw, gh)))
             written.append(dst)
         except Exception:
             continue
@@ -506,15 +442,15 @@ def ensure_sixels(st: dict) -> list[Path]:
 
 def write_preview_sixel(st: dict, image_path: str) -> Path | None:
     """Encode the chosen image to a .sixel file for the terminal preview."""
-    if not HAVE_PIL or not image_path or not Path(image_path).exists():
+    if not (HAVE_PIL and HAVE_SIXEL) or not image_path or not Path(image_path).exists():
         return None
     cells_w = int(st.get("logWidth", 28))
     cells_h = int(st.get("logHeight", 24))
     try:
         with Image.open(image_path) as im:
-            im = im.convert("RGB").resize((cells_w * 10, cells_h * 20), Image.LANCZOS)
+            enc = encode_sixel(fit_image_cells(im, cells_w, cells_h))
         PREVIEW_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        PREVIEW_CACHE.write_bytes(encode_sixel(im))
+        PREVIEW_CACHE.write_bytes(enc)
         return PREVIEW_CACHE
     except Exception:
         return None
@@ -586,6 +522,28 @@ def selftest() -> int:
             if not (SIXELS_DIR / f"{key}.sixel").exists():
                 print(f"selftest: FAIL missing sixel for {Path(g['path']).name}")
                 return 1
+    # Pixel-level regression guard: re-encode gallery[0], decode it back,
+    # compare every painted pixel against the quantized source.
+    if HAVE_PIL and HAVE_SIXEL and st.get("gallery"):
+        with Image.open(st["gallery"][0]["path"]) as im0:
+            src = fit_image_cells(im0, int(st["logWidth"]), int(st["logHeight"]))
+            srcq = src.quantize(colors=256, method=Image.MEDIANCUT).convert("RGB")
+        w2, h2, grid = decode_sixel_pixels(encode_sixel(src))
+        if (w2, h2) != (src.width, src.height):
+            print(f"selftest: FAIL round-trip size {w2}x{h2} != {src.width}x{src.height}")
+            return 1
+        sp = srcq.load()
+        through = lambda c: (c * 100 // 255) * 255 // 100
+        mismatch = total = 0
+        for yy, row in grid.items():
+            for xx, rgb in row.items():
+                total += 1
+                if rgb != tuple(through(c) for c in sp[xx, yy]):
+                    mismatch += 1
+        if total == 0 or mismatch > total // 1000:
+            print(f"selftest: FAIL round-trip mismatch {mismatch}/{total} pixels")
+            return 1
+        print(f"selftest: sixel round-trip ok ({total} pixels, {mismatch} mismatched)")
     print(f"selftest: {summary}; launcher={'ok' if LAUNCHER_PATH.exists() else 'MISSING'}")
     return 0 if ok else 1
 
