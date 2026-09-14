@@ -350,11 +350,19 @@ $logoArg = @()
 # cannot encode PNG to sixel itself); fastfetch passes the bytes through.
 if ($env:WT_SESSION -and $sixels.Count -gt 0) {
     $six = $null
-    if (-not $randLogo -and $defaultImg) {
-        $stem = [IO.Path]::GetFileNameWithoutExtension($defaultImg)
-        $six = $sixels | Where-Object { $_.BaseName -ieq $stem } | Select-Object -First 1
+    if (-not $randLogo) {
+        # Random logo OFF: always the chosen default image - never a random substitution.
+        if ($defaultImg) {
+            $stem = [IO.Path]::GetFileNameWithoutExtension($defaultImg)
+            $key  = ($stem -replace '[^A-Za-z0-9]+', '-').Trim('-')
+            if (-not $key) { $key = 'img' }
+            $cand = Join-Path (Join-Path $ffRoot 'sixels') ($key + '.sixel')
+            if (Test-Path -LiteralPath $cand) { $six = Get-Item -LiteralPath $cand }
+        }
+        if (-not $six) { $six = $sixels | Select-Object -First 1 }
+    } else {
+        $six = Get-Random -InputObject $sixels
     }
-    if (-not $six) { $six = Get-Random -InputObject $sixels }
     # 'raw' passes the pre-encoded bytes straight through; width/height tell
     # fastfetch the cell size so the fetch is drawn beside (not below) the image.
     $logoArg = @('--logo-type', 'raw', '--logo', $six.FullName,
@@ -364,7 +372,10 @@ if ($env:WT_SESSION -and $sixels.Count -gt 0) {
     if (-not $randLogo -and $defaultImg -and (Test-Path -LiteralPath $defaultImg)) {
         $png = Get-Item -LiteralPath $defaultImg
     }
-    if (-not $png) { $png = Get-Random -InputObject $pngs }
+    if (-not $png) {
+        if ($randLogo) { $png = Get-Random -InputObject $pngs }
+        else { $png = $pngs | Select-Object -First 1 }
+    }
     $logoArg = @('--logo-type', 'kitty-direct', '--logo', $png.FullName,
                  '--logo-width', $w, '--logo-height', $h)
 }
@@ -718,6 +729,7 @@ class App(tk.Tk):
         if added and not STATE.get("defaultImage"):
             STATE["defaultImage"] = STATE["gallery"][0]["path"]
         self.refresh_gallery()
+        self._sync_sixels()
         self.status(f"Added {added}, already present {skipped}, failed {failed}")
 
     def remove_selected(self):
@@ -737,6 +749,7 @@ class App(tk.Tk):
             return
         STATE["defaultImage"] = self.selected_path
         self.refresh_gallery()
+        self._sync_sixels()
         self.status("Default image set (used as fallback logo)")
 
     def edit_size(self):
@@ -750,7 +763,15 @@ class App(tk.Tk):
         if dlg.result:
             g["w"], g["h"] = dlg.result
             self.refresh_gallery()
+            self._sync_sixels()
             self.status(f"Size for {Path(g['path']).name}: {g['w']}x{g['h']} cells (Apply to use)")
+
+    def _sync_sixels(self):
+        """Re-encode sixels so add/default/size changes work without Apply."""
+        try:
+            ensure_sixels(STATE)
+        except Exception:
+            pass
 
     def refresh_gallery(self):
         for c in self.gallery_inner.winfo_children():
