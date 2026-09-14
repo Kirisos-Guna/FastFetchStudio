@@ -10,29 +10,32 @@ from __future__ import annotations
 from PIL import Image
 
 
-def flatten_alpha(im: Image.Image, bg=(0, 0, 0)) -> Image.Image:
-    """Composite transparency onto bg (sixel has no alpha channel)."""
-    im = im.convert("RGBA")
-    bgim = Image.new("RGBA", im.size, bg + (255,))
-    return Image.alpha_composite(bgim, im).convert("RGB")
+ALPHA_THRESHOLD = 128  # >= paints, < stays transparent (sixel has no partial alpha)
+
+
+def quantize_rgb(im: Image.Image) -> Image.Image:
+    """Quantize the RGB channels to <=256 colors (returns RGB image)."""
+    return im.convert("RGB").quantize(colors=256, method=Image.MEDIANCUT).convert("RGB")
 
 
 def fit_image_cells(im: Image.Image, cells_w: int, cells_h: int) -> Image.Image:
-    """Aspect-fit into the cell box (cell = 10x20 px), centered, opaque."""
+    """Aspect-fit into the cell box (cell = 10x20 px), centered, transparency kept."""
     box_w, box_h = cells_w * 10, cells_h * 20
-    im = flatten_alpha(im)
+    im = im.convert("RGBA")
     im.thumbnail((box_w, box_h), Image.LANCZOS)
-    canvas = Image.new("RGB", (box_w, box_h), (0, 0, 0))
-    canvas.paste(im, ((box_w - im.width) // 2, (box_h - im.height) // 2))
+    canvas = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
+    canvas.alpha_composite(im, ((box_w - im.width) // 2, (box_h - im.height) // 2))
     return canvas
 
 
 def encode_sixel(im: Image.Image) -> bytes:
     """Encode an RGB PIL image to sixel bytes with a transparent background."""
-    im = im.convert("RGB")
-    im = im.quantize(colors=256, method=Image.MEDIANCUT).convert("RGB")
+    im = im.convert("RGBA")
+    opaque = im.getchannel("A").point(lambda a: 255 if a >= ALPHA_THRESHOLD else 0)
+    im = quantize_rgb(im)
     w, h = im.size
     px = im.load()
+    op = opaque.load()
 
     colors: dict[tuple[int, int, int], int] = {}
     bands: list[dict[int, list[int]]] = []   # per 6-row band: colorIdx -> 6 row masks
@@ -42,6 +45,8 @@ def encode_sixel(im: Image.Image) -> bytes:
             if by + r >= h:
                 break
             for x in range(w):
+                if not op[x, by + r]:
+                    continue   # transparent: leave unpainted -> terminal bg shows
                 c = px[x, by + r]
                 idx = colors.setdefault(c, len(colors))
                 mask = d.get(idx)
@@ -115,9 +120,14 @@ def decode_sixel_pixels(data: bytes) -> tuple[int, int, dict]:
         b = body[i]
         if b == 0x22:  # raster attrs "P1;P2;W;H
             _, i = pnum(i + 1)
-            for _ in range(3):
+            rw = rh = 0
+            for k in range(3):
                 assert i < n and body[i] == 0x3B, "bad raster attrs"
-                _, i = pnum(i + 1)
+                v, i = pnum(i + 1)
+                if k == 1:
+                    rw = v
+                elif k == 2:
+                    rh = v
         elif b == 0x23:  # palette def or color select
             v, j = pnum(i + 1)
             if j < n and body[j] == 0x3B:
@@ -158,5 +168,10 @@ def decode_sixel_pixels(data: bytes) -> tuple[int, int, dict]:
             i += 1
         else:
             i += 1
-    height = max((yy + 1 for yy in grid), default=0)
+    # Prefer the declared canvas size: trailing/leading transparent bands
+    # (unpainted by design) would otherwise shrink the reported extent.
+    if rw and rh:
+        width, height = rw, rh
+    else:
+        height = max((yy + 1 for yy in grid), default=0)
     return width, height, grid

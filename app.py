@@ -43,7 +43,8 @@ except ImportError:
     HAVE_PIL = False
 
 try:
-    from sixel_codec import decode_sixel_pixels, encode_sixel, fit_image_cells
+    from sixel_codec import (ALPHA_THRESHOLD, decode_sixel_pixels,
+                             encode_sixel, fit_image_cells, quantize_rgb)
     HAVE_SIXEL = True
 except Exception:
     HAVE_SIXEL = False
@@ -527,23 +528,27 @@ def selftest() -> int:
     if HAVE_PIL and HAVE_SIXEL and st.get("gallery"):
         with Image.open(st["gallery"][0]["path"]) as im0:
             src = fit_image_cells(im0, int(st["logWidth"]), int(st["logHeight"]))
-            srcq = src.quantize(colors=256, method=Image.MEDIANCUT).convert("RGB")
+            srcq = quantize_rgb(src)
         w2, h2, grid = decode_sixel_pixels(encode_sixel(src))
         if (w2, h2) != (src.width, src.height):
             print(f"selftest: FAIL round-trip size {w2}x{h2} != {src.width}x{src.height}")
             return 1
         sp = srcq.load()
+        ap = src.convert("RGBA").getchannel("A").load()
         through = lambda c: (c * 100 // 255) * 255 // 100
         mismatch = total = 0
         for yy, row in grid.items():
             for xx, rgb in row.items():
                 total += 1
-                if rgb != tuple(through(c) for c in sp[xx, yy]):
-                    mismatch += 1
-        if total == 0 or mismatch > total // 1000:
-            print(f"selftest: FAIL round-trip mismatch {mismatch}/{total} pixels")
+                if ap[xx, yy] < ALPHA_THRESHOLD or rgb != tuple(through(c) for c in sp[xx, yy]):
+                    mismatch += 1   # painted a transparent pixel, or wrong color
+        n_opaque = sum(1 for yy in range(src.height) for xx in range(src.width)
+                       if ap[xx, yy] >= ALPHA_THRESHOLD)
+        tol = n_opaque // 1000
+        if n_opaque == 0 or mismatch > tol or total < n_opaque - tol:
+            print(f"selftest: FAIL round-trip mismatch {mismatch}/{total} pixels (opaque {n_opaque})")
             return 1
-        print(f"selftest: sixel round-trip ok ({total} pixels, {mismatch} mismatched)")
+        print(f"selftest: sixel round-trip ok ({n_opaque} painted of {total}, {mismatch} mismatched)")
     print(f"selftest: {summary}; launcher={'ok' if LAUNCHER_PATH.exists() else 'MISSING'}")
     return 0 if ok else 1
 
