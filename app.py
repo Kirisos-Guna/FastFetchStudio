@@ -843,14 +843,16 @@ class App(tk.Tk):
         self._card.pack(fill="both", expand=True, pady=(0, 10))
         inner = tk.Frame(self._card, bg=PANEL)
         inner.pack(fill="both", expand=True)
-        self.tab_gallery = tk.Frame(inner, bg=PANEL, padx=16, pady=14)
-        self.tab_theme = tk.Frame(inner, bg=PANEL, padx=16, pady=14)
-        self.tab_random = tk.Frame(inner, bg=PANEL, padx=16, pady=14)
-        self._tab_frames = {"Gallery": self.tab_gallery,
-                            "Theme": self.tab_theme,
-                            "Random": self.tab_random}
-        for f in self._tab_frames.values():
-            f.pack(fill="both", expand=True)
+        self._scroll_canvas: dict[str, tk.Canvas] = {}
+        self._tab_frames = {}
+        for name in ("Gallery", "Theme", "Random"):
+            outer = tk.Frame(inner, bg=PANEL)
+            # place() overlays the three pages; tkraise() switches them.
+            # (pack() would stack them vertically - the v1.1.0 bug.)
+            outer.place(x=0, y=0, relwidth=1, relheight=1)
+            content = self._make_scrollable(outer, name)
+            self._tab_frames[name] = outer
+            setattr(self, "tab_" + name.lower(), content)
 
         self.status_var = tk.StringVar(value="Ready")
         sb = tk.Frame(self, bg=PANEL, height=30)
@@ -865,17 +867,40 @@ class App(tk.Tk):
         self._build_gallery_tab()
         self._build_theme_tab()
         self._build_random_tab()
+        self.bind_all("<MouseWheel>", self._on_mousewheel)
         self._show_tab("Gallery")
         if not STATE["gallery"]:
             self.after(0, self._seed_gallery, True)
         self.after(0, self.refresh_gallery)
 
     def _show_tab(self, name: str):
+        self._current_tab = name
         for obj, nm in zip(self._tab_objs, ("Gallery", "Theme", "Random")):
             obj.set_active(nm == name)
         for nm, f in self._tab_frames.items():
             if nm == name:
                 f.tkraise()
+
+    def _make_scrollable(self, parent, name: str) -> tk.Frame:
+        """Canvas-based vertical scroll area; returns the content frame."""
+        canvas = tk.Canvas(parent, bg=PANEL, highlightthickness=0, bd=0)
+        vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        content = tk.Frame(canvas, bg=PANEL, padx=16, pady=14)
+        win = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind("<Configure>",
+                     lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfigure(win, width=e.width))
+        self._scroll_canvas[name] = canvas
+        return content
+
+    def _on_mousewheel(self, e):
+        cv = self._scroll_canvas.get(getattr(self, "_current_tab", ""))
+        if cv is not None:
+            cv.yview_scroll(-1 * (e.delta // 120), "units")
 
     def status(self, msg: str):
         self.status_var.set(msg)
