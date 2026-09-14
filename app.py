@@ -171,6 +171,14 @@ def load_preview_image(path: str, max_px: int = 220):
 
 
 # --------------------------------------------------------------------------- config build
+def hex_to_sgr(hex_color: str) -> str:
+    """'#e04a3f' -> '224;74;63' (decimal RGB components for SGR 38;2)."""
+    h = hex_color.lstrip("#")
+    if len(h) != 6:
+        return "255;255;255"
+    return ";".join(str(int(h[i:i + 2], 16)) for i in (0, 2, 4))
+
+
 def box_lines(st: dict) -> tuple[str, str]:
     style = BOX_STYLES.get(st.get("boxStyle", "rounded"), BOX_STYLES["rounded"])
     if style is None:
@@ -178,8 +186,8 @@ def box_lines(st: dict) -> tuple[str, str]:
     tl, hz, tr, vt, bl, br = style
     top = tl + hz * BOX_WIDTH + tr
     bot = bl + hz * BOX_WIDTH + br
-    prefix = f"\\u001b[{st['boxColor']}m" if st.get("boxColor") else ""
-    suffix = "\\u001b[0m" if prefix else ""
+    prefix = f"\x1b[38;2;{hex_to_sgr(st['boxColor'])}m" if st.get("boxColor") else ""
+    suffix = "\x1b[0m" if prefix else ""
     return (f"{prefix}{top}{suffix}", f"{prefix}{bot}{suffix}")
 
 
@@ -292,7 +300,8 @@ $ffRoot   = Join-Path $env:USERPROFILE '.config\fastfetch'
 $ffExe    = Join-Path $env:USERPROFILE '.local\bin\fastfetch.exe'
 if (-not (Test-Path $ffExe)) { $ffExe = 'fastfetch.exe' }
 $themes   = @(Get-ChildItem -Path (Join-Path $ffRoot 'themes') -Filter 'theme-*.jsonc' -File -ErrorAction SilentlyContinue)
-$pngs     = @(Get-ChildItem -Path (Join-Path $ffRoot 'pngs') -Filter '*.png' -File -Recurse -ErrorAction SilentlyContinue)
+$pngDirs  = @((Join-Path $ffRoot 'pngs'), (Join-Path $ffRoot 'images'))
+$pngs     = @($pngDirs | ForEach-Object { Get-ChildItem -Path $_ -Filter '*.png' -File -Recurse -ErrorAction SilentlyContinue } | Sort-Object FullName -Unique)
 $statePath = Join-Path $ffRoot 'gui\studio-state.json'
 
 $randLogo = $true; $randTheme = $true; $freq = 'every'; $w = @@W@@; $h = @@H@@
@@ -412,6 +421,18 @@ def selftest() -> int:
             st["defaultImage"] = st["gallery"][0]["path"]
     summary = apply_all(st)
     ok = bool(list(THEMES_DIR.glob("theme-*.jsonc"))) and LAUNCHER_PATH.exists()
+    # Regression guard: after JSON decode, custom formats must contain a real
+    # ESC control char - never a literal backslash-u001b text (double-escaped).
+    for t in THEMES_DIR.glob("theme-*.jsonc"):
+        data = json.loads(t.read_text("utf-8"))
+        for m in data.get("modules", []):
+            fmt = m.get("format") if isinstance(m, dict) else None
+            if isinstance(fmt, str) and "\\u001b" in fmt:
+                print(f"selftest: FAIL {t.name} has literal \\u001b text in a format")
+                return 1
+            if isinstance(fmt, str) and fmt.startswith("\x1b[38;2;") is False and "\x1b[" in fmt:
+                print(f"selftest: FAIL {t.name} has non-truecolor ESC sequence")
+                return 1
     print(f"selftest: {summary}; launcher={'ok' if LAUNCHER_PATH.exists() else 'MISSING'}")
     return 0 if ok else 1
 
