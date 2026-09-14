@@ -705,6 +705,7 @@ class App(tk.Tk):
         if found:
             STATE["gallery"] = found
             STATE["defaultImage"] = found[0]["path"]
+            save_state(STATE)
             self.after(0, lambda: self.status(f"Imported {len(found)} existing PNG(s) - click Apply to use them"))
 
     def add_images(self):
@@ -725,12 +726,18 @@ class App(tk.Tk):
                 skipped += 1
                 continue
             STATE["gallery"].append({"path": str(dest), "w": STATE["logWidth"], "h": STATE["logHeight"]})
+            last_added = str(dest)
             added += 1
-        if added and not STATE.get("defaultImage"):
-            STATE["defaultImage"] = STATE["gallery"][0]["path"]
+        if added:
+            # Newest upload becomes the default logo immediately.
+            STATE["defaultImage"] = last_added
         self.refresh_gallery()
         self._sync_sixels()
-        self.status(f"Added {added}, already present {skipped}, failed {failed}")
+        save_state(STATE)
+        msg = f"Added {added}, already present {skipped}, failed {failed}"
+        if added:
+            msg += f" - default logo: {Path(last_added).name}"
+        self.status(msg)
 
     def remove_selected(self):
         if not self.selected_path:
@@ -740,6 +747,8 @@ class App(tk.Tk):
         if STATE.get("defaultImage") == self.selected_path:
             STATE["defaultImage"] = STATE["gallery"][0]["path"] if STATE["gallery"] else ""
         self.selected_path = None
+        self._sync_sixels()
+        save_state(STATE)
         self.refresh_gallery()
         self.status("Removed from gallery (file kept on disk)")
 
@@ -750,7 +759,8 @@ class App(tk.Tk):
         STATE["defaultImage"] = self.selected_path
         self.refresh_gallery()
         self._sync_sixels()
-        self.status("Default image set (used as fallback logo)")
+        save_state(STATE)
+        self.status(f"Default logo: {Path(self.selected_path).name} (live in new terminals)")
 
     def edit_size(self):
         if not self.selected_path:
@@ -764,7 +774,8 @@ class App(tk.Tk):
             g["w"], g["h"] = dlg.result
             self.refresh_gallery()
             self._sync_sixels()
-            self.status(f"Size for {Path(g['path']).name}: {g['w']}x{g['h']} cells (Apply to use)")
+            save_state(STATE)
+            self.status(f"Size for {Path(g['path']).name}: {g['w']}x{g['h']} cells (applied)")
 
     def _sync_sixels(self):
         """Re-encode sixels so add/default/size changes work without Apply."""
