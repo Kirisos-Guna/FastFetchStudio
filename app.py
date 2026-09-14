@@ -320,22 +320,41 @@ $flagPath = Join-Path $ffRoot 'gui\.last-random-run'
 if ($freq -eq 'daily' -and (Test-Path $flagPath) -and (Get-Content $flagPath -Raw).Trim() -eq $stamp) { return }
 
 $themeArg = @()
+$accent = ''
 if ($randTheme -and $themes.Count -gt 0) {
-    $themeArg = @('--config', (Get-Random -InputObject $themes).FullName)
+    $theme = Get-Random -InputObject $themes
+    $themeArg = @('--config', $theme.FullName)
+    try {
+        $cfg = Get-Content $theme.FullName -Raw | ConvertFrom-Json
+        $accent = ($cfg.modules | Where-Object { $_.type -eq 'os' } | Select-Object -First 1).keyColor
+    } catch {}
 }
 
 $logoArg = @()
 if ($randLogo -and $pngs.Count -gt 0) {
     $png = Get-Random -InputObject $pngs
-    $logoType = 'sixel'
-    if ($env:TERM_PROGRAM -eq 'WezTerm') { $logoType = 'kitty-direct' }
-    $logoArg = @('--logo-type', $logoType, '--logo', $png.FullName,
-                 '--logo-width', $w, '--logo-height', $h)
+    # Only attempt image protocols in terminals that can render them:
+    # Windows Terminal sets WT_SESSION; WezTerm sets TERM_PROGRAM=WezTerm.
+    # Classic conhost supports neither - skip straight to the fallback logo.
+    if ($env:WT_SESSION) {
+        $logoArg = @('--logo-type', 'sixel', '--logo', $png.FullName,
+                     '--logo-width', $w, '--logo-height', $h)
+    } elseif ($env:TERM_PROGRAM -eq 'WezTerm') {
+        $logoArg = @('--logo-type', 'kitty-direct', '--logo', $png.FullName,
+                     '--logo-width', $w, '--logo-height', $h)
+    }
 }
 
 & $ffExe @themeArg @logoArg
 if ($LASTEXITCODE -ne 0 -and $logoArg.Count -gt 0) {
     & $ffExe @themeArg --logo 'Windows11'
+}
+if ($logoArg.Count -eq 0) {
+    # No image support (e.g. classic conhost): tint the built-in ASCII logo
+    # with this theme's accent so the look still changes every run.
+    $colorArgs = @()
+    if ($accent) { $colorArgs = @('--logo-color-1', $accent, '--logo-color-2', $accent) }
+    & $ffExe @themeArg --logo 'Windows11' @colorArgs
 }
 """
 
