@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
+# App-local state (generated at runtime, machine-specific)
+studio-state.json
+preview.sixel
+.last-random-run
+
+# OS
+Thumbs.db
+.DS_Store
