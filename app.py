@@ -844,6 +844,7 @@ class App(tk.Tk):
         inner = tk.Frame(self._card, bg=PANEL)
         inner.pack(fill="both", expand=True)
         self._scroll_canvas: dict[str, tk.Canvas] = {}
+        self._scroll_sync: dict[str, object] = {}
         self._tab_frames = {}
         for name in ("Gallery", "Theme", "Random"):
             outer = tk.Frame(inner, bg=PANEL)
@@ -883,19 +884,35 @@ class App(tk.Tk):
 
     def _make_scrollable(self, parent, name: str) -> tk.Frame:
         """Canvas-based vertical scroll area; returns the content frame."""
-        canvas = tk.Canvas(parent, bg=PANEL, highlightthickness=0, bd=0)
+        canvas = tk.Canvas(parent, bg=PANEL, highlightthickness=0, bd=0,
+                           yscrollincrement=40)
         vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
         content = tk.Frame(canvas, bg=PANEL, padx=16, pady=14)
         win = canvas.create_window((0, 0), window=content, anchor="nw")
-        content.bind("<Configure>",
-                     lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>",
-                    lambda e: canvas.itemconfigure(win, width=e.width))
+
+        def sync_scroll():
+            # Size the region from the frame's REQUIRED size, not bbox("all"):
+            # right after a rebuild the embedded window still reports its old
+            # height, which left a stale oversized region and blank scroll
+            # space. after_idle lets the child's geometry settle first.
+            canvas.itemconfigure(win, width=canvas.winfo_width())
+            canvas.configure(scrollregion=(0, 0, max(1, content.winfo_reqwidth()),
+                                           max(1, content.winfo_reqheight())))
+
+        content.bind("<Configure>", lambda e: canvas.after_idle(sync_scroll))
+        canvas.bind("<Configure>", lambda e: canvas.after_idle(sync_scroll))
+        self._scroll_sync[name] = sync_scroll
         self._scroll_canvas[name] = canvas
         return content
+
+    def _reset_scroll(self, name: str):
+        """Snap a tab back to the top after its content was rebuilt."""
+        cv = self._scroll_canvas.get(name)
+        if cv is not None:
+            cv.yview_moveto(0)
 
     def _on_mousewheel(self, e):
         cv = self._scroll_canvas.get(getattr(self, "_current_tab", ""))
@@ -1056,6 +1073,7 @@ class App(tk.Tk):
             img_label.bind("<Double-Button-1>", lambda e, p=path: (self._select(p), self.edit_size()))
             img_label.bind("<Enter>", lambda e, w=img_label, sel=is_sel: animate_highlight(w, ACCENT if sel else FIELD_H), add="+")
             img_label.bind("<Leave>", lambda e, w=img_label, sel=is_sel: animate_highlight(w, ACCENT if sel else BORDER), add="+")
+        self.after_idle(lambda: self._reset_scroll("Gallery"))
 
     def _select(self, path: str):
         self.selected_path = path
