@@ -256,15 +256,19 @@ def shift_color(hex_color: str, hue_delta: float, sat_mul: float, val_mul: float
 
 
 def palettes_for(base: dict) -> list[dict]:
-    """8 palettes: exact base + 7 hue rotations around the accent color."""
+    """8 palettes: exact base + 7 hue rotations around the accent color.
+
+    The returned dicts always contain an 'accent' key even when the input
+    lacks one (derived from title/os, else the default) - callers rely on it.
+    """
+    base = dict(base)
+    if not base.get("accent"):
+        base["accent"] = base.get("title") or base.get("os") or "#e04a3f"
     out = [dict(base)]
-    accent = base.get("accent", "#e04a3f")
+    accent = base["accent"]
     for deg, sm, vm in ((40, 1.0, 1.0), (80, 1.0, 1.0), (140, 1.0, 1.0),
                         (180, 1.0, 1.0), (220, 1.0, 1.0), (280, 0.9, 1.05), (320, 1.1, 0.95)):
-        out.append({
-            k: shift_color(v, deg, sm, vm) if k != "accent" else shift_color(v, deg, sm, vm)
-            for k, v in base.items()
-        })
+        out.append({k: shift_color(v, deg, sm, vm) for k, v in base.items()})
     return out
 
 # --------------------------------------------------------------------------- apply
@@ -665,7 +669,8 @@ class App(tk.Tk):
             row = ttk.Frame(left)
             row.pack(fill="x", pady=2)
             ttk.Label(row, text=label, width=24).pack(side="left")
-            ce = ColorEntry(row, STATE["groups"].get(key, "#e04a3f"))
+            ce = ColorEntry(row, STATE["groups"].get(key, "#e04a3f"),
+                            on_change=self._on_color_changed)
             ce.pack(side="left")
             self.color_entries[key] = ce
 
@@ -726,13 +731,20 @@ class App(tk.Tk):
         ttk.Button(btns, text="Preview in terminal", command=self.on_preview).pack(side="left", padx=(0, 6))
         ttk.Button(btns, text="Open config folder", command=lambda: os.startfile(str(FF_DIR))).pack(side="left")
 
+    def _on_color_changed(self):
+        """Live-update the accent palette strip while colors are edited."""
+        try:
+            self._draw_palette()
+        except Exception:
+            pass
+
     def _draw_palette(self):
         cv = self.palette_canvas
         cv.delete("all")
         groups = {k: ce.get() for k, ce in self.color_entries.items()}
         for i, pal in enumerate(palettes_for(groups)):
             x0 = 4 + i * 26
-            cv.create_rectangle(x0, 4, x0 + 22, 22, fill=pal["accent"], outline="")
+            cv.create_rectangle(x0, 4, x0 + 22, 22,            fill=pal.get("accent", "#e04a3f"), outline="")
 
     # ---------------------------------------------------------------- random tab
     def _build_random_tab(self):
@@ -773,6 +785,7 @@ class App(tk.Tk):
     # ---------------------------------------------------------------- actions
     def _collect(self) -> bool:
         groups = {k: ce.get() for k, ce in self.color_entries.items()}
+        groups.setdefault("accent", groups.get("title") or "#e04a3f")
         STATE["groups"] = groups
         STATE["separator"] = self.sep_var.get() or " : "
         STATE["boxStyle"] = self.box_style.get()
@@ -818,9 +831,28 @@ class App(tk.Tk):
         self.status("Profile snippet copied - paste it into your PowerShell $PROFILE")
 
 
+def smoke_gui() -> int:
+    """Headless GUI check: build the window, exercise palette + collect + apply."""
+    app = App()
+    app.update_idletasks()
+    app._draw_palette()  # raised KeyError before the accent fix
+    if not app._collect():
+        print("smoke-gui: _collect failed")
+        return 1
+    if "accent" not in STATE["groups"]:
+        print("smoke-gui: accent missing from collected groups")
+        return 1
+    summary = apply_all(STATE)
+    app.destroy()
+    print(f"smoke-gui: collect=ok; {summary}")
+    return 0
+
+
 def main() -> int:
     if "--selftest" in sys.argv:
         return selftest()
+    if "--smoke-gui" in sys.argv:
+        return smoke_gui()
     app = App()
     app.mainloop()
     return 0

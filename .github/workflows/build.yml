@@ -34,6 +34,9 @@ jobs:
       - name: Smoke test (headless selftest)
         run: .\dist\FastFetchStudio.exe --selftest
 
+      - name: Smoke test (GUI build + apply)
+        run: .\dist\FastFetchStudio.exe --smoke-gui
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
