@@ -654,8 +654,6 @@ def setup_style() -> None:
     st.configure("TEntry", fieldbackground=FIELD, foreground=FG, bordercolor=BORDER,
                  insertcolor=FG, borderwidth=1, padding=3)
     st.map("TEntry", bordercolor=[("focus", ACCENT)])
-    st.configure("TScrollbar", background=FIELD, troughcolor=BG, bordercolor=BG,
-                 arrowcolor=MUTED)
     st.configure("TSeparator", background=BORDER)
 
 
@@ -843,15 +841,18 @@ class App(tk.Tk):
         self._card.pack(fill="both", expand=True, pady=(0, 10))
         inner = tk.Frame(self._card, bg=PANEL)
         inner.pack(fill="both", expand=True)
-        self._scroll_canvas: dict[str, tk.Canvas] = {}
-        self._scroll_sync: dict[str, object] = {}
+        self._grid_scroll: tk.Canvas | None = None  # gallery image grid only
         self._tab_frames = {}
         for name in ("Gallery", "Theme", "Random"):
             outer = tk.Frame(inner, bg=PANEL)
             # place() overlays the three pages; tkraise() switches them.
             # (pack() would stack them vertically - the v1.1.0 bug.)
             outer.place(x=0, y=0, relwidth=1, relheight=1)
-            content = self._make_scrollable(outer, name)
+            # Plain frames everywhere: no per-tab scroll area (and no
+            # scrollbar widget at all). The gallery grid gets its own
+            # wheel-scrollable canvas inside _build_gallery_tab.
+            content = tk.Frame(outer, bg=PANEL, padx=16, pady=14)
+            content.pack(fill="both", expand=True)
             self._tab_frames[name] = outer
             setattr(self, "tab_" + name.lower(), content)
 
@@ -882,15 +883,17 @@ class App(tk.Tk):
             if nm == name:
                 f.tkraise()
 
-    def _make_scrollable(self, parent, name: str) -> tk.Frame:
-        """Canvas-based vertical scroll area; returns the content frame."""
+    def _make_grid_scroll(self, parent) -> tk.Frame:
+        """Wheel-scrollable canvas for the gallery image grid.
+
+        Deliberately scrollbar-free: the ttk scrollbar rendered as a bright
+        white bar on Windows, and the toolbar above the grid already
+        explains the interaction.
+        """
         canvas = tk.Canvas(parent, bg=PANEL, highlightthickness=0, bd=0,
                            yscrollincrement=40)
-        vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
-        content = tk.Frame(canvas, bg=PANEL, padx=16, pady=14)
+        content = tk.Frame(canvas, bg=PANEL)
         win = canvas.create_window((0, 0), window=content, anchor="nw")
 
         def sync_scroll():
@@ -904,19 +907,14 @@ class App(tk.Tk):
 
         content.bind("<Configure>", lambda e: canvas.after_idle(sync_scroll))
         canvas.bind("<Configure>", lambda e: canvas.after_idle(sync_scroll))
-        self._scroll_sync[name] = sync_scroll
-        self._scroll_canvas[name] = canvas
+        self._grid_scroll = canvas
         return content
 
-    def _reset_scroll(self, name: str):
-        """Snap a tab back to the top after its content was rebuilt."""
-        cv = self._scroll_canvas.get(name)
-        if cv is not None:
-            cv.yview_moveto(0)
-
     def _on_mousewheel(self, e):
-        cv = self._scroll_canvas.get(getattr(self, "_current_tab", ""))
-        if cv is not None:
+        # Only the gallery image grid scrolls; the other tabs fit their
+        # window, so the wheel must not move (or blank) anything else.
+        cv = self._grid_scroll
+        if cv is not None and getattr(self, "_current_tab", "") == "Gallery":
             cv.yview_scroll(-1 * (e.delta // 120), "units")
 
     def status(self, msg: str):
@@ -929,6 +927,7 @@ class App(tk.Tk):
     # ---------------------------------------------------------------- gallery tab
     def _build_gallery_tab(self):
         f = self.tab_gallery
+        # Toolbar + hint stay fixed at the top; only the image grid scrolls.
         bar = tk.Frame(f, bg=PANEL)
         bar.pack(fill="x", pady=(0, 10))
         AnimatedButton(bar, "accent", text="Add images...", command=self.add_images).pack(side="left", padx=(0, 8))
@@ -940,8 +939,7 @@ class App(tk.Tk):
 
         holder = tk.Frame(f, bg=PANEL)
         holder.pack(fill="both", expand=True)
-        self.gallery_inner = tk.Frame(holder, bg=PANEL)
-        self.gallery_inner.pack(fill="both", expand=True)
+        self.gallery_inner = self._make_grid_scroll(holder)
         self.gallery_cols = int(STATE.get("galleryCols", 4))
 
     def _seed_gallery(self, silent: bool = False):
@@ -1033,6 +1031,9 @@ class App(tk.Tk):
             pass
 
     def refresh_gallery(self):
+        # Remember the view position so rebuilds (select / set default /
+        # size change recreate every cell) don't snap the grid to the top.
+        keep = self._grid_scroll.yview()[0] if self._grid_scroll is not None else 0.0
         for c in self.gallery_inner.winfo_children():
             c.destroy()
         self._thumb_refs.clear()
@@ -1073,7 +1074,9 @@ class App(tk.Tk):
             img_label.bind("<Double-Button-1>", lambda e, p=path: (self._select(p), self.edit_size()))
             img_label.bind("<Enter>", lambda e, w=img_label, sel=is_sel: animate_highlight(w, ACCENT if sel else FIELD_H), add="+")
             img_label.bind("<Leave>", lambda e, w=img_label, sel=is_sel: animate_highlight(w, ACCENT if sel else BORDER), add="+")
-        self.after_idle(lambda: self._reset_scroll("Gallery"))
+        cv = self._grid_scroll
+        if cv is not None:
+            self.after_idle(lambda: cv.yview_moveto(keep))
 
     def _select(self, path: str):
         self.selected_path = path
