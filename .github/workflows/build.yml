@@ -49,3 +49,89 @@ jobs:
         with:
           files: dist/FastFetchStudio.exe
           generate_release_notes: true
+
+  verify-setup:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A fresh runner is the closest thing to the "new user" case setup.ps1 targets:
+      # no fastfetch, no profile, both PowerShell 5.1 and 7 installed.
+      - name: Run setup.ps1 on a clean machine
+        shell: pwsh
+        run: ./setup.ps1
+
+      - name: fastfetch is installed and on the user PATH
+        shell: pwsh
+        run: |
+          $ff = Join-Path $env:USERPROFILE '.local\bin\fastfetch.exe'
+          if (-not (Test-Path $ff)) { throw "fastfetch.exe was not installed at $ff" }
+          $version = (& $ff --version) -join ' '
+          Write-Host "version: $version"
+          if ($version -notmatch '^fastfetch ') { throw "unexpected --version output: $version" }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if ($userPath -notlike '*.local\bin*') { throw "install dir missing from the user PATH: $userPath" }
+
+      - name: Exactly one hook block per profile
+        shell: pwsh
+        run: |
+          $docs = [Environment]::GetFolderPath('MyDocuments')
+          $paths = @(
+            (Join-Path $docs 'WindowsPowerShell\Microsoft.PowerShell_profile.ps1'),
+            (Join-Path $docs 'PowerShell\Microsoft.PowerShell_profile.ps1')
+          )
+          $found = 0
+          foreach ($p in $paths) {
+            if (-not (Test-Path $p)) { Write-Host "absent (shell not installed): $p"; continue }
+            $n = ([regex]::Matches((Get-Content $p -Raw), [regex]::Escape('# >>> FastFetch Studio'))).Count
+            if ($n -ne 1) { throw "$p contains $n hook blocks, expected exactly 1" }
+            Write-Host "ok, exactly one hook block: $p"
+            $found++
+          }
+          if ($found -eq 0) { throw 'setup.ps1 did not write any profile' }
+
+      - name: Re-running changes nothing (idempotency)
+        shell: pwsh
+        run: |
+          $docs = [Environment]::GetFolderPath('MyDocuments')
+          $before = @(Get-ChildItem $docs -Recurse -Filter '*.bak-*' -ErrorAction SilentlyContinue).Count
+          $out = ./setup.ps1 *>&1 | Out-String
+          Write-Host $out
+          $after = @(Get-ChildItem $docs -Recurse -Filter '*.bak-*' -ErrorAction SilentlyContinue).Count
+          if ($out -notmatch 'already installed') { throw 'second run did not detect the existing binary' }
+          if ($out -notmatch 'already configured') { throw 'second run did not detect the existing hook' }
+          if ($after -ne $before) { throw "second run created backup files ($before -> $after); it should have written nothing" }
+
+      - name: A new shell actually runs the hook
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:USERPROFILE '.config\fastfetch'
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          Set-Content -Path (Join-Path $dir 'fastfetch-random.ps1') -Value 'Write-Output "LAUNCHER_RAN"'
+          $child = pwsh -NoLogo -ExecutionPolicy Bypass -Command 'Write-Output "CHILD_DONE"' 2>&1 | Out-String
+          Write-Host $child
+          if ($child -notmatch 'CHILD_DONE') { throw 'the child shell did not run' }
+          if ($child -notmatch 'LAUNCHER_RAN') { throw 'the profile hook did not call fastfetch-random.ps1' }
+
+      - name: An existing fastfetch call is never duplicated
+        shell: pwsh
+        run: |
+          $probe = Join-Path $env:TEMP 'probe-profile.ps1'
+          Set-Content -Path $probe -Value '& "$env:USERPROFILE\.config\fastfetch\fastfetch-random.ps1"'
+          $out = ./setup.ps1 -ProfilePath $probe -SkipDownload -SkipPath *>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch 'left untouched') { throw 'setup.ps1 did not report the pre-existing call' }
+          if ((Get-Content $probe -Raw) -match 'FastFetch Studio ::') { throw 'setup.ps1 wrote a hook into a profile that already had one' }
+
+      - name: Uninstall removes the hook
+        shell: pwsh
+        run: |
+          ./setup.ps1 -Uninstall
+          $docs = [Environment]::GetFolderPath('MyDocuments')
+          foreach ($p in @((Join-Path $docs 'WindowsPowerShell\Microsoft.PowerShell_profile.ps1'),
+                           (Join-Path $docs 'PowerShell\Microsoft.PowerShell_profile.ps1'))) {
+            if ((Test-Path $p) -and ((Get-Content $p -Raw) -match 'FastFetch Studio ::')) {
+              throw "hook still present in $p"
+            }
+          }
+          Write-Host 'uninstall clean'

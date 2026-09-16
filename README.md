@@ -12,6 +12,20 @@ window then shows a **random logo + random color theme** automatically.
 Grab the standalone exe from [Releases](../../releases) — no Python or other dependencies
 needed. Windows SmartScreen may warn on first run for unsigned exes: **More info → Run anyway**.
 
+## Set up a fresh machine (one command)
+
+No fastfetch yet, or don't want to touch `$PROFILE` by hand? One script installs fastfetch,
+puts it on your `PATH`, and hooks it into Windows PowerShell 5.1 and PowerShell 7+ — no
+Administrator rights needed, safe to re-run:
+
+```powershell
+irm https://raw.githubusercontent.com/Kirisos-Guna/FastFetchStudio/main/setup.ps1 | iex
+```
+
+It detects which shells you actually have, skips anything already installed, and refuses to
+add a second fastfetch call if your profile already has one. See **[SETUP.md](SETUP.md)** for
+options, verification, and uninstall.
+
 ## Features
 
 - **Gallery tab** — upload PNG / JPG / WEBP / GIF / BMP images (auto-converted to PNG into
@@ -45,6 +59,9 @@ Paste this into your `$PROFILE`, replacing any old fastfetch block:
 ```
 
 A copy-pasteable snippet with a Copy button is also available inside the app (Theme tab).
+
+Or let [setup.ps1](SETUP.md) do the download *and* the profile edit for you — including
+PowerShell 7+, which the app itself does not configure.
 
 ## Build from source
 

@@ -1,0 +1,172 @@
+# One-shot Windows setup
+
+Gets you from a bare Windows machine to *fastfetch runs automatically in every new
+terminal* with a single command. No Administrator rights, no manual `$PROFILE` editing.
+
+This is the automated version of the [manual two-line profile edit](README.md#hook-it-into-powershell-one-time)
+described in the README, plus the fastfetch download that normally has to happen first.
+
+## Quick start
+
+### Option 1 — one command (recommended)
+
+```powershell
+irm https://raw.githubusercontent.com/Kirisos-Guna/FastFetchStudio/main/setup.ps1 | iex
+```
+
+To preview without changing anything, or to pass options, use this form instead:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/Kirisos-Guna/FastFetchStudio/main/setup.ps1))) -DryRun
+```
+
+### Option 2 — from a clone
+
+```powershell
+git clone https://github.com/Kirisos-Guna/FastFetchStudio.git
+cd FastFetchStudio
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+> `-ExecutionPolicy Bypass` applies only to that one process. It is not a system-wide change.
+
+Either way, **open a new terminal window when it finishes** — the hook runs at shell
+startup, so the current window will not show anything.
+
+## What it does
+
+1. **Detects your machine** — CPU architecture, Windows PowerShell 5.1, PowerShell 7+,
+   and Windows Terminal. Only the shells actually installed get configured.
+2. **Installs fastfetch** — downloads the latest official release
+   (`fastfetch-windows-amd64.zip` or `aarch64`) from GitHub and extracts it to
+   `%USERPROFILE%\.local\bin`. If a working `fastfetch.exe` is already there, the
+   download is skipped.
+3. **Adds it to your user `PATH`** so `fastfetch` resolves in any new terminal. An
+   existing entry is detected first, so `PATH` never grows duplicates.
+4. **Writes a managed block into each profile** — `Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`
+   for 5.1 and `Documents\PowerShell\Microsoft.PowerShell_profile.ps1` for 7+. The block
+   calls FastFetch Studio's `fastfetch-random.ps1` when it exists (random logo + theme
+   per window) and falls back to a plain `fastfetch` run otherwise.
+
+The block it writes looks like this:
+
+```powershell
+# >>> FastFetch Studio :: fastfetch on shell start >>>
+if (-not $env:FASTFETCH_STUDIO_DISABLE) {
+    & {
+        $ffLauncher = Join-Path $env:USERPROFILE '.config\fastfetch\fastfetch-random.ps1'
+        if (Test-Path -LiteralPath $ffLauncher) {
+            & $ffLauncher
+        } elseif (Get-Command fastfetch.exe -ErrorAction SilentlyContinue) {
+            fastfetch.exe
+        }
+    }
+}
+# <<< FastFetch Studio :: fastfetch on shell start <<<
+```
+
+## Options
+
+| Option | Effect |
+|---|---|
+| `-DryRun` | Print every action without changing anything. |
+| `-Force` | Reinstall the binary even if it works, and add the block even if another fastfetch call exists. |
+| `-SkipDownload` | Don't touch the binary — only update `PATH` and the profile. |
+| `-SkipPath` | Don't modify your user `PATH`. |
+| `-SkipProfile` | Don't touch any profile — only install the binary and `PATH`. |
+| `-InstallDir <path>` | Install somewhere other than `%USERPROFILE%\.local\bin`. |
+| `-FastfetchVersion <tag>` | Install a specific release, e.g. `2.68.1`, instead of `latest`. |
+| `-ProfilePath <path>` | Write the block into a specific profile file instead of the auto-detected ones. |
+| `-Uninstall` | Remove the managed block from your profiles. |
+| `-Uninstall -RemoveBinary` | Also delete the fastfetch files the script installed. |
+
+Examples:
+
+```powershell
+.\setup.ps1 -DryRun                                  # preview only
+.\setup.ps1 -FastfetchVersion 2.68.1                 # pin a version
+.\setup.ps1 -InstallDir D:\tools\bin                 # custom location
+.\setup.ps1 -Uninstall                               # remove the hook
+.\setup.ps1 -Uninstall -RemoveBinary                 # remove the hook and the binary
+```
+
+## Verify it worked
+
+```powershell
+fastfetch --version
+```
+
+Then **open a new terminal window**. You should see fastfetch output before your prompt.
+
+To confirm the hook itself is in place:
+
+```powershell
+Select-String -Path $PROFILE -Pattern 'FastFetch Studio'
+```
+
+## Undo
+
+```powershell
+.\setup.ps1 -Uninstall                 # removes the managed block only
+.\setup.ps1 -Uninstall -RemoveBinary   # also deletes the fastfetch files it installed
+```
+
+`-RemoveBinary` deletes only the files that ship in the fastfetch release
+(`fastfetch.exe`, `flashfetch.exe`, `libqjs-0.dll`, `lua55.dll`, `LICENSE`, `presets`).
+Unrelated tools in the same folder — `uv.exe`, for example — are left alone, and the
+folder is only removed if it ends up empty.
+
+## Is it safe to re-run?
+
+Yes. It is designed to be idempotent:
+
+- A working `fastfetch.exe` is detected and the download is skipped.
+- A `PATH` entry that already exists is not added again.
+- The profile block is compared with what's on disk. If it already matches, **nothing is
+  written and no backup is created**. If it's stale (an older version of the block) or
+  duplicated, it is replaced in place with exactly one copy.
+- Your profile is backed up to `Microsoft.PowerShell_profile.ps1.bak-<timestamp>` before
+  any modification — and only when a modification is actually needed.
+- If your profile already calls fastfetch from somewhere else (a hand-written line, or
+  another tool's block), the script **reports it and leaves the file untouched**, because
+  adding a second call would run fastfetch twice. Pass `-Force` if you want the managed
+  block anyway.
+
+## Troubleshooting
+
+**Nothing happens in a new terminal.**
+Profiles only run if the execution policy allows them. Check with
+`Get-ExecutionPolicy -Scope CurrentUser`; if it is `Restricted`, run:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+**`fastfetch` is not recognised.**
+`PATH` changes apply to newly started processes. Open a fresh terminal, or use the full
+path `%USERPROFILE%\.local\bin\fastfetch.exe`.
+
+**The script says it left your profile alone.**
+It found an existing fastfetch invocation. That's the safety check working — remove that
+line and re-run, or pass `-Force`.
+
+**Windows Terminal shows no logo, or a plain one.**
+Image logos need a terminal that supports them. Windows Terminal renders sixel logos;
+classic `conhost` falls back to fastfetch's built-in logo. Also check that your Windows
+Terminal `settings.json` doesn't launch PowerShell with `-NoProfile`, which skips the
+profile entirely — the script warns you if it spots this.
+
+**The download fails (proxy, firewall, corporate network).**
+Install fastfetch yourself, then run `.\setup.ps1 -SkipDownload`.
+
+**32-bit Windows.**
+fastfetch publishes no 32-bit Windows build. The script warns and the amd64 binary will
+not run.
+
+## After setup
+
+The script installs and wires up fastfetch. To customise *what* it shows — images,
+colour themes, per-window randomisation — run **FastFetch Studio** (`FastFetchStudio.exe`).
+It writes the `fastfetch-random.ps1` launcher and theme files that the profile hook picks
+up automatically. Nothing needs re-running: the hook checks for the launcher on every
+shell start.
