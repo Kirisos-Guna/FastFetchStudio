@@ -108,6 +108,15 @@ BOX_STYLES = {
 BOX_WIDTH = 44
 SIXEL_DCS = "\x1bPq"
 
+# Shown on the Random tab. Kept as data so the columns can be aligned by grid
+# instead of a monospace text blob.
+MANAGED_FILES = [
+    ("config.jsonc", "your main fastfetch config (backed up once)"),
+    ("themes\\theme-01..08.jsonc", "generated color palettes"),
+    ("fastfetch-random.ps1", "picks a random theme + logo on each run"),
+    ("pngs\\", "your uploaded images (converted to PNG)"),
+]
+
 
 def esc(s: str) -> str:
     """Escape a string for embedding inside a fastfetch JSON string value."""
@@ -582,6 +591,8 @@ FIELD_H = "#26304a"   # hover
 FG      = "#e7eaf3"
 MUTED   = "#969eb5"
 BORDER  = "#28304a"
+EDGE    = "#3f4b6e"   # outline of unselected check/radio indicators
+HOVER_EDGE = "#5a6a94"
 ACCENT  = "#e04a3f"   # matches the user's theme accent
 ACCENT_H = "#f2604f"
 OKC     = "#41c46f"
@@ -591,6 +602,9 @@ FONT_UI    = ("Segoe UI", 10)
 FONT_SEMI  = ("Segoe UI Semibold", 10)
 FONT_HEAD  = ("Segoe UI Semibold", 11)
 FONT_SMALL = ("Segoe UI", 9)
+FONT_MONO  = ("Consolas", 9)
+
+THUMB_PX = 170   # gallery thumbnail box: square, image letterboxed inside
 
 
 def lerp_hex(a: str, b: str, t: float) -> str:
@@ -635,14 +649,9 @@ def setup_style() -> None:
     st.map("TNotebook.Tab",
            background=[("selected", PANEL)], foreground=[("selected", FG)])
     st.map("TNotebook.Tab", expand=[("selected", (1, 1, 1, 0))])
-    st.configure("TCheckbutton", background=PANEL, foreground=FG, indicatorcolor=FIELD,
-                 indicatormargin=0, padding=2)
-    st.map("TCheckbutton", indicatorcolor=[("selected", ACCENT)],
-           background=[("active", PANEL)], foreground=[("active", FG)])
-    st.configure("TRadiobutton", background=PANEL, foreground=FG, indicatorcolor=FIELD,
-                 indicatormargin=0, padding=2)
-    st.map("TRadiobutton", indicatorcolor=[("selected", ACCENT)],
-           background=[("active", PANEL)], foreground=[("active", FG)])
+    # Checkbutton / Radiobutton are deliberately NOT styled here: clam ignores
+    # `indicatorcolor`, so ttk drew them as white squares with an X. Use the
+    # FFToggle widget instead (canvas-drawn, exact colors, real label gap).
     st.configure("TCombobox", fieldbackground=FIELD, background=FIELD,
                  foreground=FG, arrowcolor=FG, bordercolor=BORDER,
                  lightcolor=FIELD, darkcolor=FIELD, borderwidth=1)
@@ -697,19 +706,21 @@ class AnimatedButton(tk.Button):
 
 
 class ColorEntry(ttk.Frame):
-    """Hex color entry + pick button."""
+    """Hex color entry + swatch + picker button."""
 
     def __init__(self, master, initial: str, on_change=None):
-        super().__init__(master)
+        super().__init__(master, style="Card.TFrame")
         self.on_change = on_change
         self.var = tk.StringVar(value=initial)
-        self.swatch = tk.Label(self, width=3, background=initial,
-                               relief="flat", highlightthickness=1,
-                               highlightbackground=BORDER)
-        self.swatch.pack(side="left", padx=(0, 4))
-        self.entry = ttk.Entry(self, textvariable=self.var, width=10)
+        self.swatch = tk.Label(self, width=3, background=initial, relief="flat",
+                               highlightthickness=1, highlightbackground=BORDER,
+                               cursor="hand2")
+        self.swatch.pack(side="left", padx=(0, 6))
+        self.swatch.bind("<Button-1>", lambda e: self.pick())
+        self.entry = ttk.Entry(self, textvariable=self.var, width=9)
         self.entry.pack(side="left")
-        ttk.Button(self, text="...", width=3, command=self.pick).pack(side="left", padx=(4, 0))
+        AnimatedButton(self, text="Pick", command=self.pick, font=FONT_SMALL,
+                       width=4, padx=4, pady=1).pack(side="left", padx=(6, 0))
         self.var.trace_add("write", lambda *_: self._changed())
 
     def _changed(self):
@@ -721,14 +732,14 @@ class ColorEntry(ttk.Frame):
 
     def pick(self):
         from tkinter import colorchooser
-        current = norm_hex(self.var.get(), "#e04a3f")
+        current = norm_hex(self.var.get(), ACCENT)
         rgb = colorchooser.askcolor(color=current, parent=self)[0]
         if rgb:
             h = "#{:02x}{:02x}{:02x}".format(*(round(c) for c in rgb))
             self.var.set(h)
 
     def get(self) -> str:
-        return norm_hex(self.var.get(), "#e04a3f")
+        return norm_hex(self.var.get(), ACCENT)
 
 
 class SizeDialog(tk.Toplevel):
@@ -805,6 +816,133 @@ class AnimatedTab(tk.Canvas):
             self.create_rectangle(24, 28, 24 + 44 * f, 31, fill=ACCENT, outline="")
 
 
+class FFToggle(tk.Canvas):
+    """Canvas-drawn checkbox / radio button.
+
+    ttk's clam theme silently ignores `indicatorcolor`, so Checkbutton and
+    Radiobutton rendered as a plain white square (an X inside a box, or a dot
+    inside a box) pressed right up against the label. Drawing the indicator
+    ourselves gives exact colors, a real gap before the text, and a hover
+    state that matches the rest of the UI.
+    """
+
+    BOX, GAP = 15, 10
+
+    def __init__(self, master, text: str, variable, value=None, command=None,
+                 kind: str = "check", bg: str = PANEL):
+        font = tkfont.Font(font=FONT_UI)
+        width = self.BOX + self.GAP + font.measure(text) + 2
+        height = max(24, font.metrics("linespace") + 8)
+        super().__init__(master, width=width, height=height, bg=bg,
+                         highlightthickness=0, bd=0, cursor="hand2", takefocus=1)
+        self._var, self._value, self._command = variable, value, command
+        self._kind, self._text = kind, text
+        self._hover = self._focused = False
+        self._task = None
+        self._frac = 1.0 if self._checked() else 0.0
+        self._var.trace_add("write", lambda *_: self._sync(True))
+        self.bind("<Button-1>", self._toggle)
+        self.bind("<space>", self._toggle)
+        self.bind("<Return>", self._toggle)
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self.bind("<FocusIn>", lambda e: self._set_focus(True))
+        self.bind("<FocusOut>", lambda e: self._set_focus(False))
+        self._draw()
+
+    # -- state ------------------------------------------------------------
+    def _checked(self) -> bool:
+        if self._value is None:
+            return bool(self._var.get())
+        return self._var.get() == self._value
+
+    def _toggle(self, _event=None):
+        if self._value is None:
+            self._var.set(not bool(self._var.get()))
+        else:
+            self._var.set(self._value)
+        if self._command:
+            self._command()
+        return "break"
+
+    def _set_hover(self, on: bool):
+        self._hover = on
+        self._draw()
+
+    def _set_focus(self, on: bool):
+        self._focused = on
+        self._draw()
+
+    def _sync(self, animate: bool = False):
+        target = 1.0 if self._checked() else 0.0
+        if not animate or abs(target - self._frac) < 0.01:
+            self._frac = target
+            self._draw()
+            return
+        if self._task:
+            try:
+                self.after_cancel(self._task)
+            except Exception:
+                pass
+        start, state = self._frac, {"i": 0}
+
+        def tick():
+            state["i"] += 1
+            self._frac = start + (target - start) * state["i"] / 7
+            self._draw()
+            if state["i"] < 7:
+                self._task = self.after(13, tick)
+            else:
+                self._task = None
+
+        tick()
+
+    # -- painting ---------------------------------------------------------
+    def _draw(self):
+        self.delete("all")
+        f = self._frac
+        height = int(self["height"])
+        cy = height / 2
+        x0, y0 = 1.5, cy - self.BOX / 2
+        x1, y1 = 1.5 + self.BOX, cy + self.BOX / 2
+        if self._focused:
+            self.create_rectangle(0, 0, int(self["width"]) - 1, height - 1,
+                                  outline=FIELD_H, dash=(2, 2))
+        outline = ACCENT if f > 0.5 else (HOVER_EDGE if self._hover else EDGE)
+        fill = lerp_hex(FIELD, ACCENT, f) if f > 0.01 else FIELD
+        mid = (x0 + x1) / 2
+        if self._kind == "radio":
+            self.create_oval(x0, y0, x1, y1, fill=fill, outline=outline, width=1.5)
+            if f > 0.15:
+                r = 3.6 * min(1.0, f)
+                self.create_oval(mid - r, cy - r, mid + r, cy + r,
+                                 fill="#ffffff", outline="")
+        else:
+            self.create_rectangle(x0, y0, x1, y1, fill=fill, outline=outline, width=1.5)
+            if f > 0.2:
+                self.create_line(mid - 3.6, cy + 0.3, mid - 1.2, cy + 2.9,
+                                 mid + 3.4, cy - 3.3, fill="#ffffff", width=2,
+                                 capstyle="round", joinstyle="round")
+        self.create_text(self.BOX + self.GAP, cy, text=self._text, anchor="w",
+                         fill=FG, font=FONT_UI)
+
+
+def section(master, title: str, pady=(0, 0)) -> tk.Frame:
+    """Titled, bordered panel that groups related controls inside a tab.
+
+    Packs itself into `master` and returns the padded inner frame, so callers
+    add their rows straight into it.
+    """
+    box = tk.Frame(master, bg=PANEL, highlightthickness=1,
+                   highlightbackground=BORDER, highlightcolor=BORDER)
+    box.pack(fill="x", pady=pady)
+    inner = tk.Frame(box, bg=PANEL, padx=14, pady=9)
+    inner.pack(fill="both", expand=True)
+    tk.Label(inner, text=title, bg=PANEL, fg=MUTED, font=FONT_SEMI,
+             anchor="w").pack(anchor="w", pady=(0, 7))
+    return inner
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -842,6 +980,7 @@ class App(tk.Tk):
         inner = tk.Frame(self._card, bg=PANEL)
         inner.pack(fill="both", expand=True)
         self._grid_scroll: tk.Canvas | None = None  # gallery image grid only
+        self._scroll_canvases: dict[str, tk.Canvas] = {}
         self._tab_frames = {}
         for name in ("Gallery", "Theme", "Random"):
             outer = tk.Frame(inner, bg=PANEL)
@@ -883,12 +1022,13 @@ class App(tk.Tk):
             if nm == name:
                 f.tkraise()
 
-    def _make_grid_scroll(self, parent) -> tk.Frame:
-        """Wheel-scrollable canvas for the gallery image grid.
+    def _make_scroll_area(self, parent, tab_name: str) -> tk.Frame:
+        """Wheel-scrollable content column, registered against `tab_name`.
 
         Deliberately scrollbar-free: the ttk scrollbar rendered as a bright
-        white bar on Windows, and the toolbar above the grid already
-        explains the interaction.
+        white bar on Windows. The Theme tab needs it because its control list
+        is taller than a small window - without it the profile snippet and the
+        button row were simply clipped off the bottom of the card.
         """
         canvas = tk.Canvas(parent, bg=PANEL, highlightthickness=0, bd=0,
                            yscrollincrement=40)
@@ -907,18 +1047,22 @@ class App(tk.Tk):
 
         content.bind("<Configure>", lambda e: canvas.after_idle(sync_scroll))
         canvas.bind("<Configure>", lambda e: canvas.after_idle(sync_scroll))
-        self._grid_scroll = canvas
+        self._scroll_canvases[tab_name] = canvas
+        return content
+
+    def _make_grid_scroll(self, parent) -> tk.Frame:
+        """Wheel-scrollable canvas for the gallery image grid."""
+        self._grid_scroll = None
+        content = self._make_scroll_area(parent, "Gallery")
+        self._grid_scroll = self._scroll_canvases["Gallery"]
         return content
 
     def _on_mousewheel(self, e):
-        # Only the gallery image grid scrolls; the other tabs fit their
-        # window, so the wheel must not move (or blank) anything else.
-        cv = self._grid_scroll
-        if cv is not None and getattr(self, "_current_tab", "") == "Gallery":
+        # Scroll only the canvas owned by the visible tab; the wheel must not
+        # move (or blank) anything else.
+        cv = self._scroll_canvases.get(getattr(self, "_current_tab", ""))
+        if cv is not None:
             cv.yview_scroll(-1 * (e.delta // 120), "units")
-
-    def status(self, msg: str):
-        self.status_var.set(msg)
 
     # ---------------------------------------------------------------- status
     def status(self, msg: str):
@@ -1045,23 +1189,40 @@ class App(tk.Tk):
         cols = max(1, self.gallery_cols)
         for i, g in enumerate(gallery):
             r, c = divmod(i, cols)
+            # sticky="n" matters: without it Tk centres each cell vertically in
+            # its row, so a cell with a shorter thumbnail floated down and the
+            # row lost its baseline.
             cell = tk.Frame(self.gallery_inner, bg=PANEL)
-            cell.grid(row=r, column=c, padx=8, pady=8)
-            ph = load_preview_image(g["path"], 170)
-            if ph is not None:
-                self._thumb_refs[g["path"]] = ImageTk.PhotoImage(ph)
-                img_label = tk.Label(cell, image=self._thumb_refs[g["path"]],
-                                     bg=FIELD, bd=0, highlightthickness=2,
-                                     highlightbackground=BORDER, highlightcolor=BORDER)
-            else:
-                img_label = tk.Label(cell, text="?", width=20, height=10, bg=FIELD, fg=MUTED,
-                                     bd=0, highlightthickness=2,
-                                     highlightbackground=BORDER, highlightcolor=BORDER)
+            cell.grid(row=r, column=c, padx=8, pady=8, sticky="n")
             is_sel = self.selected_path == g["path"]
             is_def = STATE.get("defaultImage") == g["path"]
             ring = ACCENT if is_sel else BORDER
-            img_label.configure(highlightbackground=ring, highlightcolor=ring)
-            img_label.pack()
+
+            # Fixed-size box holding the thumbnail. load_preview_image() keeps
+            # the source aspect ratio, so a wide logo and a tall portrait used
+            # to produce different-sized labels and stagger the row; the box
+            # gives every cell the same footprint and letterboxes the image.
+            # The box (not the image label) carries the selection ring, so the
+            # highlight is a constant rectangle.
+            # Filled with PANEL, not FIELD: most uploads are transparent PNGs
+            # meant for a dark terminal, so matching the card surface lets them
+            # sit flush instead of inside a visibly lighter tile.
+            box = tk.Frame(cell, bg=PANEL, width=THUMB_PX, height=THUMB_PX,
+                           highlightthickness=2, highlightbackground=ring,
+                           highlightcolor=ring)
+            box.pack()
+            box.pack_propagate(False)
+
+            ph = load_preview_image(g["path"], THUMB_PX)
+            if ph is not None:
+                self._thumb_refs[g["path"]] = ImageTk.PhotoImage(ph)
+                img_label = tk.Label(box, image=self._thumb_refs[g["path"]],
+                                     bg=PANEL, bd=0)
+            else:
+                img_label = tk.Label(box, text="?", bg=PANEL, fg=MUTED,
+                                     font=FONT_UI, bd=0)
+            img_label.place(relx=0.5, rely=0.5, anchor="center")
+
             name = Path(g["path"]).name
             info = f"{name}\n{g['w']}x{g['h']} cells"
             tk.Label(cell, text=info, justify="center", bg=PANEL,
@@ -1070,10 +1231,11 @@ class App(tk.Tk):
                 tk.Label(cell, text="\u2605 default logo", bg=PANEL, fg=ACCENT,
                          font=FONT_SMALL).pack()
             path = g["path"]
-            img_label.bind("<Button-1>", lambda e, p=path: self._select(p))
-            img_label.bind("<Double-Button-1>", lambda e, p=path: (self._select(p), self.edit_size()))
-            img_label.bind("<Enter>", lambda e, w=img_label, sel=is_sel: animate_highlight(w, ACCENT if sel else FIELD_H), add="+")
-            img_label.bind("<Leave>", lambda e, w=img_label, sel=is_sel: animate_highlight(w, ACCENT if sel else BORDER), add="+")
+            for w in (box, img_label):
+                w.bind("<Button-1>", lambda e, p=path: self._select(p))
+                w.bind("<Double-Button-1>", lambda e, p=path: (self._select(p), self.edit_size()))
+                w.bind("<Enter>", lambda e, bx=box, sel=is_sel: animate_highlight(bx, ACCENT if sel else FIELD_H), add="+")
+                w.bind("<Leave>", lambda e, bx=box, sel=is_sel: animate_highlight(bx, ACCENT if sel else BORDER), add="+")
         cv = self._grid_scroll
         if cv is not None:
             self.after_idle(lambda: cv.yview_moveto(keep))
@@ -1085,57 +1247,66 @@ class App(tk.Tk):
     # ---------------------------------------------------------------- theme tab
     def _build_theme_tab(self):
         f = self.tab_theme
-        top = ttk.Frame(f)
-        top.pack(fill="both", expand=True)
-        left = ttk.Frame(top)
-        left.pack(side="left", fill="both", expand=True, padx=(0, 12))
-        right = ttk.Frame(top)
+        # The button row stays pinned to the bottom (packed first with
+        # side="bottom"), exactly like the gallery toolbar; everything above it
+        # lives in a scroll area so a short window never clips the snippet.
+        btns = tk.Frame(f, bg=PANEL)
+        btns.pack(side="bottom", fill="x", pady=(10, 0))
+        self.apply_btn = AnimatedButton(btns, "accent", text="Apply & Generate",
+                                        command=self.on_apply)
+        self.apply_btn.pack(side="left", padx=(0, 8))
+        AnimatedButton(btns, text="Preview in terminal", command=self.on_preview).pack(side="left", padx=(0, 8))
+        AnimatedButton(btns, text="Open config folder",
+                       command=lambda: os.startfile(str(FF_DIR))).pack(side="left")
+        tk.Frame(f, bg=BORDER, height=1).pack(side="bottom", fill="x", pady=(10, 0))
+
+        holder = tk.Frame(f, bg=PANEL)
+        holder.pack(fill="both", expand=True)
+        body = self._make_scroll_area(holder, "Theme")
+
+        top = tk.Frame(body, bg=PANEL)
+        top.pack(fill="x")
+        left = tk.Frame(top, bg=PANEL)
+        left.pack(side="left", fill="both", expand=True, padx=(0, 14))
+        right = tk.Frame(top, bg=PANEL)
         right.pack(side="left", fill="y")
 
-        tk.Label(left, text="KEY COLORS \u00b7 per module group", bg=PANEL, fg=MUTED,
-                 font=FONT_SEMI).pack(anchor="w", pady=(0, 8))
+        # One grid for all seven rows, so every label shares column 0 and the
+        # ColorEntry widgets line up - a per-row frame let the longest label
+        # ("GPU Driver / Memory / Disks") push its swatch out of alignment and
+        # the fixed width=24 labels were clipped.
+        colors = section(left, "KEY COLORS \u00b7 per module group")
+        grid = tk.Frame(colors, bg=PANEL)
+        grid.pack(fill="x")
+        grid.columnconfigure(0, minsize=205)
         self.color_entries: dict[str, ColorEntry] = {}
-        for key, label, _hint in GROUPS:
-            row = tk.Frame(left, bg=PANEL)
-            row.pack(fill="x", pady=3)
-            tk.Label(row, text=label, width=24, bg=PANEL, fg=FG, font=FONT_UI,
-                     anchor="w").pack(side="left")
-            ce = ColorEntry(row, STATE["groups"].get(key, "#e04a3f"),
+        for i, (key, label, _hint) in enumerate(GROUPS):
+            tk.Label(grid, text=label, bg=PANEL, fg=FG, font=FONT_UI,
+                     anchor="w").grid(row=i, column=0, sticky="w", pady=1)
+            ce = ColorEntry(grid, STATE["groups"].get(key, ACCENT),
                             on_change=self._on_color_changed)
-            ce.pack(side="left")
+            ce.grid(row=i, column=1, sticky="w", pady=1)
             self.color_entries[key] = ce
 
-        ttk.Separator(left).pack(fill="x", pady=12)
-        tk.Label(left, text="BOX BORDER", bg=PANEL, fg=MUTED,
-                 font=FONT_SEMI).pack(anchor="w", pady=(0, 8))
-        brow = tk.Frame(left, bg=PANEL)
-        brow.pack(fill="x", pady=3)
-        tk.Label(brow, text="Style", width=24, bg=PANEL, fg=FG,
-                 anchor="w").pack(side="left")
+        border = section(left, "BOX BORDER", pady=(12, 0))
+        brow = tk.Frame(border, bg=PANEL)
+        brow.pack(fill="x")
+        brow.columnconfigure(0, minsize=205)
+        tk.Label(brow, text="Style", bg=PANEL, fg=FG, font=FONT_UI,
+                 anchor="w").grid(row=0, column=0, sticky="w", pady=3)
         self.box_style = tk.StringVar(value=STATE.get("boxStyle", "rounded"))
-        ttk.Combobox(brow, textvariable=self.box_style, state="readonly", width=10,
-                     values=list(BOX_STYLES.keys())).pack(side="left")
-        crow = tk.Frame(left, bg=PANEL)
-        crow.pack(fill="x", pady=3)
-        tk.Label(crow, text="Border color (blank = default)", width=24, bg=PANEL, fg=FG,
-                 anchor="w").pack(side="left")
-        self.box_color = ColorEntry(crow, STATE.get("boxColor") or "#e04a3f")
-        self.box_color.pack(side="left")
+        ttk.Combobox(brow, textvariable=self.box_style, state="readonly", width=12,
+                     values=list(BOX_STYLES.keys())).grid(row=0, column=1, sticky="w", pady=3)
+        crow = tk.Frame(border, bg=PANEL)
+        crow.pack(fill="x")
+        crow.columnconfigure(0, minsize=205)
+        tk.Label(crow, text="Border color (blank = default)", bg=PANEL, fg=FG,
+                 font=FONT_UI, anchor="w").grid(row=0, column=0, sticky="w", pady=3)
+        self.box_color = ColorEntry(crow, STATE.get("boxColor") or ACCENT)
+        self.box_color.grid(row=0, column=1, sticky="w", pady=3)
 
-        ttk.Separator(left).pack(fill="x", pady=10)
-        srow = tk.Frame(left, bg=PANEL)
-        srow.pack(fill="x", pady=3)
-        tk.Label(srow, text="Separator", width=24, bg=PANEL, fg=FG,
-                 anchor="w").pack(side="left")
-        self.sep_var = tk.StringVar(value=STATE.get("separator", " : "))
-        ttk.Entry(srow, textvariable=self.sep_var, width=10).pack(side="left")
-        self.colors_block = tk.BooleanVar(value=STATE.get("colorsBlock", True))
-        ttk.Checkbutton(left, text="Show palette (colors) block at bottom",
-                        variable=self.colors_block).pack(anchor="w", pady=6)
-
-        tk.Label(right, text="LOGO SIZE \u00b7 default", bg=PANEL, fg=MUTED,
-                 font=FONT_SEMI).pack(anchor="w", pady=(0, 8))
-        sz = tk.Frame(right, bg=PANEL)
+        size = section(right, "LOGO SIZE \u00b7 default")
+        sz = tk.Frame(size, bg=PANEL)
         sz.pack(anchor="w")
         self.log_w = tk.StringVar(value=str(STATE.get("logWidth", 28)))
         self.log_h = tk.StringVar(value=str(STATE.get("logHeight", 24)))
@@ -1143,36 +1314,49 @@ class App(tk.Tk):
         ttk.Spinbox(sz, from_=10, to=80, textvariable=self.log_w, width=5).grid(row=0, column=1, padx=(2, 10))
         tk.Label(sz, text="H", bg=PANEL, fg=FG).grid(row=0, column=2)
         ttk.Spinbox(sz, from_=8, to=60, textvariable=self.log_h, width=5).grid(row=0, column=3, padx=2)
-        tk.Label(right, text="terminal cells", bg=PANEL, fg=MUTED,
-                 font=FONT_SMALL).pack(anchor="w")
+        tk.Label(size, text="terminal cells", bg=PANEL, fg=MUTED,
+                 font=FONT_SMALL).pack(anchor="w", pady=(6, 0))
 
-        ttk.Separator(right).pack(fill="x", pady=12)
-        tk.Label(right, text="ACCENT PALETTE PREVIEW", bg=PANEL, fg=MUTED,
-                 font=FONT_SEMI).pack(anchor="w", pady=(0, 8))
-        self.palette_canvas = tk.Canvas(right, width=8 * 28 + 8, height=28, bg=PANEL,
+        prev = section(right, "ACCENT PALETTE PREVIEW", pady=(12, 0))
+        self.palette_canvas = tk.Canvas(prev, width=8 * 28 + 8, height=28, bg=PANEL,
                                         highlightthickness=0)
         self.palette_canvas.pack(anchor="w")
         self._draw_palette()
 
-        ttk.Separator(right).pack(fill="x", pady=12)
-        tk.Label(right, text="PROFILE SNIPPET \u00b7 paste into your PowerShell $PROFILE",
-                 bg=PANEL, fg=MUTED, font=FONT_SEMI, justify="left").pack(anchor="w", pady=(0, 8))
-        snippet = tk.Text(right, height=2, width=46, wrap="none", font=("Consolas", 9),
+        # OPTIONS lives in the right column: the left column already carries
+        # the tallest block (seven colour rows), and stacking a third section
+        # under it pushed the profile snippet out of the card entirely.
+        opts = section(right, "OPTIONS", pady=(12, 0))
+        srow = tk.Frame(opts, bg=PANEL)
+        srow.pack(fill="x")
+        srow.columnconfigure(0, minsize=205)
+        tk.Label(srow, text="Separator (key / value)", bg=PANEL, fg=FG,
+                 font=FONT_UI, anchor="w").grid(row=0, column=0, sticky="w", pady=3)
+        self.sep_var = tk.StringVar(value=STATE.get("separator", " : "))
+        ttk.Entry(srow, textvariable=self.sep_var, width=8).grid(row=0, column=1, sticky="w", pady=3)
+        self.colors_block = tk.BooleanVar(value=STATE.get("colorsBlock", True))
+        FFToggle(opts, "Show palette block at bottom",
+                 self.colors_block).pack(anchor="w", pady=(8, 0))
+
+        # Full width on purpose: the snippet's second line is 63 characters,
+        # which clipped inside the narrow right-hand column. The Copy button
+        # sits beside the code rather than under it, which keeps the whole
+        # section ~36px shorter - enough for the tab to fit without scrolling
+        # at the default window size.
+        snip_box = section(body, "PROFILE SNIPPET \u00b7 paste into your PowerShell $PROFILE",
+                           pady=(12, 0))
+        srow = tk.Frame(snip_box, bg=PANEL)
+        srow.pack(fill="x")
+        # Pack the button first: expand=True on the text would otherwise eat
+        # the whole row and push the button out of view.
+        AnimatedButton(srow, text="Copy snippet", command=self.copy_snippet,
+                       font=FONT_SMALL, pady=4).pack(side="right", padx=(8, 0))
+        snippet = tk.Text(srow, height=2, width=46, wrap="none", font=FONT_MONO,
                           bg=FIELD, fg=FG, insertbackground=FG, relief="flat",
                           highlightthickness=1, highlightbackground=BORDER, padx=8, pady=6)
         snippet.insert("1.0", profile_snippet())
         snippet.configure(state="disabled")
-        snippet.pack(anchor="w", fill="x")
-        AnimatedButton(right, text="Copy snippet", command=self.copy_snippet).pack(anchor="w", pady=6)
-
-        btns = tk.Frame(f, bg=PANEL)
-        btns.pack(fill="x", pady=(14, 0))
-        self.apply_btn = AnimatedButton(btns, "accent", text="Apply & Generate",
-                                        command=self.on_apply)
-        self.apply_btn.pack(side="left", padx=(0, 8))
-        AnimatedButton(btns, text="Preview in terminal", command=self.on_preview).pack(side="left", padx=(0, 8))
-        AnimatedButton(btns, text="Open config folder",
-                       command=lambda: os.startfile(str(FF_DIR))).pack(side="left")
+        snippet.pack(side="left", fill="x", expand=True)
 
     def _on_color_changed(self):
         """Live-update the accent palette strip while colors are edited."""
@@ -1187,40 +1371,43 @@ class App(tk.Tk):
         groups = {k: ce.get() for k, ce in self.color_entries.items()}
         for i, pal in enumerate(palettes_for(groups)):
             x0 = 4 + i * 28
-            cv.create_rectangle(x0, 4, x0 + 24, 24, fill=pal.get("accent", "#e04a3f"), outline="")
+            cv.create_rectangle(x0, 4, x0 + 24, 24, fill=pal.get("accent", ACCENT), outline="")
 
     # ---------------------------------------------------------------- random tab
     def _build_random_tab(self):
         f = self.tab_random
-        tk.Label(f, text="WHAT CHANGES EVERY TIME YOU OPEN A TERMINAL",
-                 bg=PANEL, fg=MUTED, font=FONT_SEMI).pack(anchor="w", pady=(0, 10))
+        holder = tk.Frame(f, bg=PANEL)
+        holder.pack(fill="both", expand=True)
+        f = self._make_scroll_area(holder, "Random")
+
+        what = section(f, "WHAT CHANGES EVERY TIME YOU OPEN A TERMINAL")
         self.rand_logo = tk.BooleanVar(value=STATE.get("randomLogo", True))
         self.rand_theme = tk.BooleanVar(value=STATE.get("randomTheme", True))
-        ttk.Checkbutton(f, text="Random logo (off = use default image)", variable=self.rand_logo,
-                        command=self._random_changed).pack(anchor="w", pady=2)
-        ttk.Checkbutton(f, text="Random color theme (8 palettes generated from your colors)",
-                        variable=self.rand_theme, command=self._random_changed).pack(anchor="w", pady=2)
+        FFToggle(what, "Random logo (off = use default image)", self.rand_logo,
+                 command=self._random_changed).pack(anchor="w", pady=3)
+        FFToggle(what, "Random color theme (8 palettes generated from your colors)",
+                 self.rand_theme, command=self._random_changed).pack(anchor="w", pady=3)
 
-        ttk.Separator(f).pack(fill="x", pady=14)
-        tk.Label(f, text="HOW OFTEN", bg=PANEL, fg=MUTED,
-                 font=FONT_SEMI).pack(anchor="w", pady=(0, 8))
+        how = section(f, "HOW OFTEN", pady=(12, 0))
         self.freq = tk.StringVar(value=STATE.get("frequency", "every"))
-        ttk.Radiobutton(f, text="Every new terminal window", variable=self.freq, value="every",
-                        command=self._random_changed).pack(anchor="w", pady=2)
-        ttk.Radiobutton(f, text="Once per day (same look all day)", variable=self.freq, value="daily",
-                        command=self._random_changed).pack(anchor="w", pady=2)
+        FFToggle(how, "Every new terminal window", self.freq, value="every",
+                 kind="radio", command=self._random_changed).pack(anchor="w", pady=3)
+        FFToggle(how, "Once per day (same look all day)", self.freq, value="daily",
+                 kind="radio", command=self._random_changed).pack(anchor="w", pady=3)
 
-        ttk.Separator(f).pack(fill="x", pady=12)
-        info = ("Files FastFetch Studio manages:\n"
-                "  \u2022 config.jsonc            \u2014 your main fastfetch config (a backup is saved once)\n"
-                "  \u2022 themes\\theme-01..08.jsonc \u2014 generated color palettes\n"
-                "  \u2022 fastfetch-random.ps1    \u2014 picks a random theme + logo on each run\n"
-                "  \u2022 pngs\\                   \u2014 your uploaded images (converted to PNG)")
-        snip = tk.Text(f, height=5, wrap="none", font=("Consolas", 9), bg=PANEL, fg=MUTED,
-                       relief="flat", highlightthickness=0, bd=0)
-        snip.insert("1.0", info)
-        snip.configure(state="disabled")
-        snip.pack(anchor="w", fill="x")
+        # Aligned columns beat the old flat tk.Text blob, which sat dark-on-dark
+        # and relied on hand-counted spaces for its "columns".
+        files = section(f, "FILES FASTFETCH STUDIO MANAGES", pady=(12, 0))
+        table = tk.Frame(files, bg=PANEL)
+        table.pack(fill="x")
+        table.columnconfigure(1, minsize=190)
+        for i, (name, desc) in enumerate(MANAGED_FILES):
+            tk.Label(table, text="\u2022", bg=PANEL, fg=ACCENT,
+                     font=FONT_MONO).grid(row=i, column=0, sticky="w", padx=(0, 8), pady=1)
+            tk.Label(table, text=name, bg=PANEL, fg=FG, font=FONT_MONO,
+                     anchor="w").grid(row=i, column=1, sticky="w", pady=1)
+            tk.Label(table, text=desc, bg=PANEL, fg=MUTED, font=FONT_SMALL,
+                     anchor="w").grid(row=i, column=2, sticky="w", padx=(10, 0), pady=1)
 
     def _random_changed(self):
         STATE["randomLogo"] = bool(self.rand_logo.get())
@@ -1233,7 +1420,7 @@ class App(tk.Tk):
     # ---------------------------------------------------------------- actions
     def _collect(self) -> bool:
         groups = {k: ce.get() for k, ce in self.color_entries.items()}
-        groups.setdefault("accent", groups.get("title") or "#e04a3f")
+        groups.setdefault("accent", groups.get("title") or ACCENT)
         STATE["groups"] = groups
         STATE["separator"] = self.sep_var.get() or " : "
         STATE["boxStyle"] = self.box_style.get()
