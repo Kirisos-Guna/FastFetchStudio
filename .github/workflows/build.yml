@@ -82,6 +82,30 @@ jobs:
             return 0
           }
 
+          # The runner has no fastfetch. That is the fresh-machine case the
+          # launcher is meant to explain rather than fail silently on, so pin
+          # PATH to System32 and assert it draws nothing but does speak up.
+          Remove-Item Env:\WT_SESSION -ErrorAction SilentlyContinue
+          Remove-Item Env:\TERM_PROGRAM -ErrorAction SilentlyContinue
+          $savedPath = $env:PATH
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $env:FF_RC = 0
+          Remove-Item -LiteralPath $inv -Force -ErrorAction SilentlyContinue
+          # Write-Host goes to the information stream, so 2>&1 would capture
+          # nothing; *>&1 is what actually surfaces the message.
+          $msg = & $probe *>&1 | Out-String
+          $missing = if (Test-Path -LiteralPath $inv) { @(Get-Content -LiteralPath $inv).Count } else { 0 }
+          $env:PATH = $savedPath
+          if ($missing -ne 0) { throw "launcher drew $missing times with no fastfetch installed" }
+          if ($msg -notmatch 'was not found') { throw "missing fastfetch produced no explanation: $msg" }
+          Write-Host 'missing-fastfetch path ok (0 invocations, explained)'
+
+          # Give it a stub so $ffExe resolves. The probe never executes it -
+          # the invocations are replaced by log writes - it only has to exist.
+          $bin = Join-Path $env:USERPROFILE '.local\bin'
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $bin 'fastfetch.exe') -Value '' -NoNewline
+
           foreach ($case in @('conhost', 'windows-terminal')) {
             if ($case -eq 'windows-terminal') { $env:WT_SESSION = 'ci' }
             else { Remove-Item Env:\WT_SESSION -ErrorAction SilentlyContinue }
