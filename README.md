@@ -47,7 +47,7 @@ options, verification, and uninstall.
 |---|---|
 | `~\.config\fastfetch\config.jsonc` | main fastfetch config (original backed up once to `config.backup.jsonc`) |
 | `~\.config\fastfetch\themes\theme-01..08.jsonc` | the 8 palettes |
-| `~\.config\fastfetch\fastfetch-random.ps1` | picks a random theme + logo each run (sixel on Windows Terminal, kitty-direct on WezTerm, built-in logo fallback) |
+| `~\.config\fastfetch\fastfetch-random.ps1` | picks a random theme + logo each run (sixel on Windows Terminal, kitty-direct on WezTerm, built-in logo fallback). Written by **Apply & Generate**; `setup.ps1` writes a plain bootstrap here so the profile hook works before the app has ever run |
 | `~\.config\fastfetch\gui\studio-state.json` | app state (gallery, colors, settings) |
 
 ## Hook it into PowerShell (one time)
@@ -55,13 +55,33 @@ options, verification, and uninstall.
 Paste this into your `$PROFILE`, replacing any old fastfetch block:
 
 ```powershell
-& "$env:USERPROFILE\.config\fastfetch\fastfetch-random.ps1"
+$ffLauncher = "$env:USERPROFILE\.config\fastfetch\fastfetch-random.ps1"
+if (Test-Path -LiteralPath $ffLauncher) { & $ffLauncher } else { fastfetch.exe }
 ```
+
+The `Test-Path` guard matters: `fastfetch-random.ps1` is a *generated* file. A bare
+`& "$env:USERPROFILE\.config\fastfetch\fastfetch-random.ps1"` works once the file exists, but
+on a machine where it does not yet, every new shell opens with
+
+> `& : The term '...\fastfetch-random.ps1' is not recognized as the name of a cmdlet, function, script file, or operable program.`
 
 A copy-pasteable snippet with a Copy button is also available inside the app (Theme tab).
 
-Or let [setup.ps1](SETUP.md) do the download *and* the profile edit for you — including
-PowerShell 7+, which the app itself does not configure.
+Or let [setup.ps1](SETUP.md) do the download, the profile edit, *and* write the launcher for
+you — including PowerShell 7+, which the app itself does not configure.
+
+### Prerequisite: the execution policy must allow scripts
+
+On a fresh Windows install the effective policy is `Restricted`, which blocks `.ps1` files
+**and profiles**. Both the pasted line and the profile hook stay silent until you allow
+signed-local scripts. This is user-scoped — no Administrator rights needed:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+Check it with `Get-ExecutionPolicy`. `setup.ps1 -FixExecutionPolicy` will do it for you.
+If the policy is enforced by Group Policy, only your administrator can change it.
 
 ## Build from source
 
@@ -77,8 +97,13 @@ and attaches the exe to releases automatically.
 
 ## Uninstall
 
-Delete `~\.config\fastfetch\themes\`, `fastfetch-random.ps1`, the `gui\` folder, and restore
-`config.backup.jsonc` over `config.jsonc`. Uploaded images stay in `pngs\`.
+`.\setup.ps1 -Uninstall` removes the managed `$PROFILE` hook and the bootstrap launcher
+(add `-RemoveBinary` to delete the fastfetch binary too). It leaves a launcher that
+FastFetch Studio generated, since that is your own configuration.
+
+To do it by hand: delete `~\.config\fastfetch\themes\`, `fastfetch-random.ps1`, the `gui\`
+folder, and restore `config.backup.jsonc` over `config.jsonc`. Uploaded images stay in
+`pngs\`.
 
 ## License
 

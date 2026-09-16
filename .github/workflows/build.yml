@@ -37,6 +37,83 @@ jobs:
       - name: Smoke test (GUI build + apply)
         run: .\dist\FastFetchStudio.exe --smoke-gui
 
+      # The launcher runs on every shell start, so its behaviour is worth
+      # pinning: it must draw fastfetch exactly once, and 'once per day' must
+      # actually throttle. Both were broken before v1.1.5.
+      - name: Launcher draws fastfetch exactly once
+        shell: pwsh
+        run: |
+          python -c "import app; app.generate_launcher({'logWidth':28,'logHeight':24})"
+          $launcher = Join-Path $env:USERPROFILE '.config\fastfetch\fastfetch-random.ps1'
+          if (-not (Test-Path -LiteralPath $launcher)) { throw 'app.py did not write a launcher' }
+
+          # Fixtures: the image branch only runs when a .sixel exists, and the
+          # retry-on-failure only happens inside that branch. Without one, every
+          # case takes the no-image path and the retry is never exercised.
+          $sixels = Join-Path $env:USERPROFILE '.config\fastfetch\sixels'
+          New-Item -ItemType Directory -Path $sixels -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $sixels 'demo.sixel') -Value 'x' -NoNewline
+          $themes = Join-Path $env:USERPROFILE '.config\fastfetch\themes'
+          New-Item -ItemType Directory -Path $themes -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $themes 'theme-01.jsonc') -Value '{"modules":[]}'
+
+          $errs = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile($launcher, [ref]$null, [ref]$errs)
+          if (@($errs).Count) { throw "launcher has syntax errors: $($errs[0].Message)" }
+          Write-Host 'launcher parses cleanly'
+
+          # Replace each real invocation with a log write that also models the
+          # exe's exit code. Swapping in a bare cmdlet would leave $LASTEXITCODE
+          # unset, and "$null -ne 0" is TRUE in PowerShell - which is precisely
+          # how the fallback came to fire on a successful run.
+          $probe = Join-Path $env:TEMP 'launcher-probe.ps1'
+          $inv   = Join-Path $env:TEMP 'launcher-inv.txt'
+          $log   = "Add-Content -LiteralPath '$inv' -Value 'run'`n`$global:LASTEXITCODE = [int]`$env:FF_RC"
+          $src = Get-Content -LiteralPath $launcher -Raw
+          $src = $src.Replace('& $ffExe @themeArg @logoArg', $log)
+          $src = $src.Replace("& `$ffExe @themeArg --logo 'Windows11' @colorArgs", $log)
+          Set-Content -LiteralPath $probe -Value $src
+
+          function Count-Runs([int]$rc) {
+            $env:FF_RC = $rc
+            Remove-Item -LiteralPath $inv -Force -ErrorAction SilentlyContinue
+            & $probe | Out-Null
+            if (Test-Path -LiteralPath $inv) { return @(Get-Content -LiteralPath $inv).Count }
+            return 0
+          }
+
+          foreach ($case in @('conhost', 'windows-terminal')) {
+            if ($case -eq 'windows-terminal') { $env:WT_SESSION = 'ci' }
+            else { Remove-Item Env:\WT_SESSION -ErrorAction SilentlyContinue }
+            Remove-Item Env:\TERM_PROGRAM -ErrorAction SilentlyContinue
+            $n = Count-Runs 0
+            Write-Host "$case -> $n invocation(s)"
+            if ($n -ne 1) { throw "launcher invoked fastfetch $n times in the '$case' case; must be exactly 1" }
+          }
+
+          # A failing image attempt retries exactly once; the no-image path has
+          # no retry at all.
+          $env:WT_SESSION = 'ci'
+          $failImg = Count-Runs 1
+          if ($failImg -ne 2) { throw "failed image attempt drew $failImg times, expected 2 (try + retry)" }
+          Remove-Item Env:\WT_SESSION -ErrorAction SilentlyContinue
+          $failPlain = Count-Runs 1
+          if ($failPlain -ne 1) { throw "conhost fallback drew $failPlain times, expected 1" }
+          Write-Host "retry ok (image=$failImg conhost=$failPlain)"
+
+          # 'once per day' must write its day stamp and then hold for the rest of the day.
+          $gui = Join-Path $env:USERPROFILE '.config\fastfetch\gui'
+          New-Item -ItemType Directory -Path $gui -Force | Out-Null
+          $stamp = Join-Path $gui '.last-random-run'
+          Set-Content -LiteralPath (Join-Path $gui 'studio-state.json') -Value '{"frequency":"daily"}'
+          Remove-Item -LiteralPath $stamp -Force -ErrorAction SilentlyContinue
+          $first = Count-Runs 0
+          if ($first -ne 1) { throw "daily run drew $first times, expected 1" }
+          if (-not (Test-Path -LiteralPath $stamp)) { throw 'daily run did not write the day stamp' }
+          $second = Count-Runs 0
+          if ($second -ne 0) { throw "daily frequency drew again the same day ($second invocations)" }
+          Write-Host "daily ok (first=$first second=$second)"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
