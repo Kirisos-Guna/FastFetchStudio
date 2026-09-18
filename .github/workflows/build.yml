@@ -390,13 +390,18 @@ jobs:
           Write-Host "  no sixel, no art        -> $bare"
           if ($bare -ne 'builtin') { throw "preview drew '$bare' with nothing to draw, expected 'builtin'" }
 
-          # The narrow-window guard: a fresh window opens at the last size Windows
-          # Terminal used (71x41 here), which wrapped every line back over the
-          # picture. Only growth is requested, so a wide window is left alone.
-          if ($body -notmatch '\[Console\]::SetWindowSize') {
-            throw 'preview.ps1 no longer widens the window; the fetch will wrap over the logo'
+          # The preview must leave the window the size Windows Terminal opened it
+          # at. Resizing the console host does work, but Windows Terminal
+          # persists the last window size it closed, so widening the preview
+          # silently rewrites the width of every terminal opened afterwards.
+          # Tried in v1.1.11 and deliberately reverted in v1.1.12.
+          # Comment lines are dropped first: the template explains *why* it does
+          # not resize, and naming the API there must not trip its own guard.
+          $code = ($body -split "`n" | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+          if ($code -match 'SetWindowSize') {
+            throw 'preview.ps1 resizes the window; that rewrites the size of every later terminal'
           }
-          Write-Host 'preview ok (file payload; branches pinned; window widened)'
+          Write-Host 'preview ok (file payload; branches pinned; window size untouched)'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

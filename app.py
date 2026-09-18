@@ -780,21 +780,11 @@ $ErrorActionPreference = 'SilentlyContinue'
 # fetch will name when it really runs inside one.
 $env:WT_SESSION = 'set-by-wt'
 
-# A fresh window opens at whatever size Windows Terminal last used - 71x41 on
-# this machine - and that is too narrow for a @@W@@-column logo next to the
-# 46-column box, so every line wrapped back over the picture. wt's new-tab takes
-# no --size (that flag belongs to split-pane), so ask the console host instead.
-# Grow only, and swallow failures: SetWindowSize simply refuses on a screen too
-# small for the request, and the window then keeps the size it opened with.
-try {
-    if ([Console]::WindowWidth -lt @@COLS@@) {
-        [Console]::SetWindowSize(@@COLS@@, [Console]::WindowHeight)
-    }
-    if ([Console]::WindowHeight -lt @@ROWS@@) {
-        [Console]::SetWindowSize([Console]::WindowWidth, @@ROWS@@)
-    }
-} catch { }
-
+# The window is left exactly as Windows Terminal opened it. Do not resize it:
+# SetWindowSize() works, but Windows Terminal persists the size of the last
+# window it closed, so widening the preview silently rewrites the width of every
+# terminal the user opens afterwards. A narrow window wrapping the fetch over the
+# logo is a smaller price than that. See the guard in the CI preview step.
 $ffExe = Join-Path $env:USERPROFILE '.local\bin\fastfetch.exe'
 if (-not (Test-Path -LiteralPath $ffExe)) { $ffExe = 'fastfetch.exe' }
 if (-not (Get-Command -Name $ffExe -ErrorAction SilentlyContinue)) {
@@ -836,11 +826,7 @@ def write_preview_script(st: dict, image_path: str) -> Path | None:
             .replace("@@SIXEL@@", str(PREVIEW_CACHE))
             .replace("@@ART@@", str(ARTS_DIR / f"{art_key(image_path)}.art"))
             .replace("@@W@@", str(int(st.get("logWidth", 28))))
-            .replace("@@H@@", str(int(st.get("logHeight", 24))))
-            # Room for the logo, a gap, and the widest line the themes draw (the
-            # 46-column box), plus slack. See the resize block in the template.
-            .replace("@@COLS@@", str(max(100, int(st.get("logWidth", 28)) + 58)))
-            .replace("@@ROWS@@", str(max(34, int(st.get("logHeight", 24)) + 10))))
+            .replace("@@H@@", str(int(st.get("logHeight", 24)))))
     PREVIEW_SCRIPT.parent.mkdir(parents=True, exist_ok=True)
     PREVIEW_SCRIPT.write_text(body, "utf-8", newline="\n")
     return PREVIEW_SCRIPT

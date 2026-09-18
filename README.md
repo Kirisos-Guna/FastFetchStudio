@@ -38,8 +38,12 @@ options, verification, and uninstall.
   (every window or once per day), and how the logo is drawn (auto / always draw the image /
   built-in ASCII only).
 - **Live preview** — renders the logo to a real sixel image and opens it in a Windows
-  Terminal window, with the same theme and module list the launcher will draw. The window
-  widens itself to fit and stays open until you close it, so the fetch does not flash past.
+  Terminal window, with the same theme and module list the launcher will draw. The window stays
+  open until you close it, so the fetch does not flash past. It opens at whatever size Windows
+  Terminal last used, and a narrow one will wrap the fetch over the logo — resize the window and
+  click **Preview in terminal** again. The app deliberately does not resize your terminal for
+  you: Windows Terminal remembers the last window size, so doing that would change the width of
+  every terminal you open afterwards.
 - **8 palettes** — your exact colors plus 7 hue-rotated variants are generated so
   randomization has variety.
 - **An icon on every row** — the generated config switches fastfetch's key icons on, so all
