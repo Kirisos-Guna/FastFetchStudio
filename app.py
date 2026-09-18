@@ -131,6 +131,12 @@ KEY_PADDING_LEFT = 1     # the indent the keys used to carry as literal spaces
 # separator, no icon. Used by the title row so it stays a bare "user @ host".
 NO_KEY = " "
 
+# The labeled rows the generated config must contain, in order (gpu twice: once
+# for the device, once for its driver). --smoke-icons compares against this, so
+# dropping a module fails the guard instead of quietly checking fewer rows.
+KEYED_MODULES = ("chassis", "os", "kernel", "packages", "display", "terminal",
+                 "wm", "cpu", "gpu", "gpu", "memory", "disk", "uptime")
+
 # Shown on the Random tab. Kept as data so the columns can be aligned by grid
 # instead of a monospace text blob.
 MANAGED_FILES = [
@@ -1783,7 +1789,7 @@ def smoke_icons() -> int:
               for pal in palettes_for(st["groups"])]
 
     bad: list[str] = []
-    keyed = 0
+    keyed = len(KEYED_MODULES)
     for i, cfg in enumerate(themes, start=1):
         dk = cfg.get("display", {}).get("key", {})
         if dk.get("type") != KEY_ICON_MODE:
@@ -1794,6 +1800,7 @@ def smoke_icons() -> int:
                        f"{dk.get('paddingLeft')!r}, expected {KEY_PADDING_LEFT}")
         if i > 1:
             continue
+        kinds: list[str] = []
         for m in cfg["modules"]:
             if not isinstance(m, dict) or "key" not in m:
                 continue
@@ -1808,22 +1815,48 @@ def smoke_icons() -> int:
             elif not key.strip():
                 bad.append(f"theme-01: {kind} has an empty key")
             else:
-                keyed += 1
+                kinds.append(kind)
+        keyed = len(kinds)
+        # Without this the guard passes vacuously on a config that lost its
+        # modules: zero keyed rows would match zero icons to check.
+        if tuple(kinds) != KEYED_MODULES:
+            bad.append(f"theme-01: keyed modules are {tuple(kinds)}, "
+                       f"expected {KEYED_MODULES}")
 
     ff = _find_fastfetch()
     if ff is not None:
         sep = st.get("separator", " : ")
         ansi = re.compile(r"\x1b\[[0-9;]*m")
+
+        def render(path: Path) -> tuple[list[str] | None, str]:
+            """fastfetch's keyed rows for a config, or (None, why) if it would not run."""
+            try:
+                proc = subprocess.run([ff, "--config", str(path), "--logo", "none", "--pipe"],
+                                      capture_output=True, timeout=60)
+            except subprocess.TimeoutExpired:
+                return None, "timed out after 60s"
+            if proc.returncode != 0:
+                err = proc.stderr.decode("utf-8", "replace").strip()
+                return None, f"exit {proc.returncode}: {err[:120]}"
+            lines = proc.stdout.decode("utf-8", "replace").splitlines()
+            return [ansi.sub("", ln).rstrip() for ln in lines if sep in ansi.sub("", ln)], ""
+
         tmp = Path(tempfile.mkdtemp(prefix="ffstudio-icons-"))
         try:
             for i, cfg in enumerate(themes, start=1):
                 f = tmp / f"theme-{i:02d}.jsonc"
                 f.write_text(dump_jsonc(cfg), "utf-8")
-                proc = subprocess.run([ff, "--config", str(f), "--logo", "none", "--pipe"],
-                                      capture_output=True)
-                rows = [ansi.sub("", ln).rstrip()
-                        for ln in proc.stdout.decode("utf-8", "replace").splitlines()]
-                rows = [r for r in rows if sep in r]
+                # A cold fastfetch on a busy machine occasionally renders nothing
+                # at all - seen once in the wild as "0 keyed rows" on one theme,
+                # then never again. Retrying once keeps an environment hiccup from
+                # failing a build. A genuinely broken config renders nothing twice,
+                # so this cannot hide a real regression.
+                rows, why = render(f)
+                if not rows:
+                    rows, why = render(f)
+                if rows is None:
+                    bad.append(f"theme-{i:02d}: fastfetch would not render it ({why})")
+                    continue
                 if len(rows) != keyed:
                     bad.append(f"theme-{i:02d}: fastfetch drew {len(rows)} keyed rows, "
                                f"expected {keyed}")
