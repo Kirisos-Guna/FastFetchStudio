@@ -5,7 +5,7 @@ GUI customizer + random launcher for [fastfetch](https://github.com/fastfetch-cl
 Pick images, color theming, and randomization in a small desktop app — every new terminal
 window then shows a **random logo + random color theme** automatically.
 
-![screenshot placeholder](docs/screenshot.png)
+![FastFetch Studio's Gallery tab, showing four imported logo images with one marked as the default](docs/screenshot.png)
 
 ## Download
 
