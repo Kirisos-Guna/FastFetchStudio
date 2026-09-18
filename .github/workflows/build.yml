@@ -44,6 +44,13 @@ jobs:
       - name: Scroll origin stays inside the scroll region
         run: .\dist\FastFetchStudio.exe --smoke-scroll
 
+      # Icons come from fastfetch's per-type keyIcon default, not from a glyph
+      # typed into each key. A hand-maintained glyph list drifted and left 6 of
+      # 14 rows label-only. This runner has no fastfetch, so only the config
+      # shape is checked here; verify-setup does the render check.
+      - name: Every module has an icon
+        run: .\dist\FastFetchStudio.exe --smoke-icons
+
       # The launcher runs on every shell start, so its behaviour is worth
       # pinning: it must draw fastfetch exactly once, and 'once per day' must
       # actually throttle. Both were broken before v1.1.5.
@@ -179,6 +186,12 @@ jobs:
           if ($version -notmatch '^fastfetch ') { throw "unexpected --version output: $version" }
           $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
           if ($userPath -notlike '*.local\bin*') { throw "install dir missing from the user PATH: $userPath" }
+
+      # End-to-end icon check: this job has a real fastfetch, so the guard can
+      # render the generated config and assert every keyed row actually draws a
+      # glyph - not just that the config asks for one.
+      - name: Every module renders an icon
+        run: python app.py --smoke-icons
 
       - name: Exactly one hook block per profile
         shell: pwsh

@@ -40,6 +40,12 @@ options, verification, and uninstall.
   Windows Terminal.
 - **8 palettes** — your exact colors plus 7 hue-rotated variants are generated so
   randomization has variety.
+- **An icon on every row** — the generated config switches fastfetch's key icons on, so all
+  thirteen labeled modules (chassis, OS, kernel, packages, display, terminal, WM, CPU, GPU,
+  driver, memory, OS age, uptime) get a Nerd Font glyph, tinted with that row's key color.
+  The glyph comes from fastfetch's own per-type default rather than being typed into each
+  label, so adding a module can never leave a row icon-less. Needs a Nerd Font in your
+  terminal; `fastfetch --key-type string` prints plain labels instead.
 
 ## What it generates
 

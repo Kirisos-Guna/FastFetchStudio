@@ -108,6 +108,29 @@ BOX_STYLES = {
 BOX_WIDTH = 44
 SIXEL_DCS = "\x1bPq"
 
+# --------------------------------------------------------------------------- icons
+#
+# Every module's icon is delivered by fastfetch itself: `display.key.type` below
+# turns on the key icon, and fastfetch then fills in its own built-in `keyIcon`
+# default for that module type. No glyph is written into any `key` string.
+#
+# The previous approach - a hand-typed glyph inside each key, e.g. "   OS" with a
+# private-use codepoint in front - is why icons went missing. A hand-maintained
+# list has to be kept in sync with the module list, and it silently drifted:
+# 6 of the 14 rows (kernel, terminal, title, cpu, GPU Driver, memory) had no
+# glyph at all, so they rendered label-only. Deriving the icon from the module
+# type cannot drift, because fastfetch always has a default for every type.
+#
+# Do NOT put a glyph in a `key` string. With key.type "both" that renders two
+# icons - fastfetch's default *and* the hand-typed one - which is what happened
+# to the hand-written config this replaced.
+KEY_ICON_MODE = "both"
+KEY_PADDING_LEFT = 1     # the indent the keys used to carry as literal spaces
+
+# A whitespace-only key is fastfetch's "no key" sentinel - no label, no
+# separator, no icon. Used by the title row so it stays a bare "user @ host".
+NO_KEY = " "
+
 # Shown on the Random tab. Kept as data so the columns can be aligned by grid
 # instead of a monospace text blob.
 MANAGED_FILES = [
@@ -216,36 +239,38 @@ def build_config_json(st: dict, accent: str) -> dict:
     if top:
         mods.append({"type": "custom", "format": top})
     mods += [
-        {"type": "chassis", "key": "   Chassis", "format": "{1} {2} {3}",
+        {"type": "chassis", "key": "Chassis", "format": "{1} {2} {3}",
          "keyColor": st["groups"]["os"]},
-        {"type": "os", "key": "   OS", "format": "{2}", "keyColor": st["groups"]["os"]},
-        {"type": "kernel", "key": "   Kernel", "format": "{2}", "keyColor": st["groups"]["os"]},
-        {"type": "packages", "key": "   Packages", "keyColor": st["groups"]["pkg"]},
-        {"type": "display", "key": "   Display", "format": "{1}x{2} @ {3}Hz [{7}]",
+        {"type": "os", "key": "OS", "format": "{2}", "keyColor": st["groups"]["os"]},
+        {"type": "kernel", "key": "Kernel", "format": "{2}", "keyColor": st["groups"]["os"]},
+        {"type": "packages", "key": "Packages", "keyColor": st["groups"]["pkg"]},
+        {"type": "display", "key": "Display", "format": "{1}x{2} @ {3}Hz [{7}]",
          "keyColor": st["groups"]["pkg"]},
-        {"type": "terminal", "key": "   Terminal", "keyColor": st["groups"]["term"]},
-        {"type": "wm", "key": "   WM", "format": "{2}", "keyColor": st["groups"]["term"]},
+        {"type": "terminal", "key": "Terminal", "keyColor": st["groups"]["term"]},
+        {"type": "wm", "key": "WM", "format": "{2}", "keyColor": st["groups"]["term"]},
     ]
     if bot:
         mods.append({"type": "custom", "format": bot})
     mods += [
         "break",
-        {"type": "title", "key": "  ", "format": "{6} {7} {8}",
+        # NO_KEY (a lone space) is fastfetch's "no key" sentinel: the title row
+        # then draws as a bare "user @ host" with no label and no separator.
+        {"type": "title", "key": NO_KEY, "format": "{6} {7} {8}",
          "keyColor": st["groups"]["title"]},
     ]
     if top:
         mods.append({"type": "custom", "format": top})
     mods += [
-        {"type": "cpu", "format": "{1} @ {7}", "key": "   CPU",
+        {"type": "cpu", "format": "{1} @ {7}", "key": "CPU",
          "keyColor": st["groups"]["cpu"]},
-        {"type": "gpu", "format": "{1} {2}", "key": "   GPU",
+        {"type": "gpu", "format": "{1} {2}", "key": "GPU",
          "keyColor": st["groups"]["cpu"]},
-        {"type": "gpu", "format": "{3}", "key": "   GPU Driver",
+        {"type": "gpu", "format": "{3}", "key": "GPU Driver",
          "keyColor": st["groups"]["drv"]},
-        {"type": "memory", "key": "   Memory ", "keyColor": st["groups"]["drv"]},
-        {"type": "disk", "key": "   OS Age ", "folders": "/", "keyColor": st["groups"]["drv"],
+        {"type": "memory", "key": "Memory", "keyColor": st["groups"]["drv"]},
+        {"type": "disk", "key": "OS Age", "folders": "/", "keyColor": st["groups"]["drv"],
          "format": "{days} days"},
-        {"type": "uptime", "key": "   Uptime ", "keyColor": st["groups"]["drv"]},
+        {"type": "uptime", "key": "Uptime", "keyColor": st["groups"]["drv"]},
     ]
     if bot:
         mods.append({"type": "custom", "format": bot})
@@ -259,7 +284,13 @@ def build_config_json(st: dict, accent: str) -> dict:
         # NOTE: no "logo" key here on purpose - fastfetch gives the config's
         # logo section precedence over --logo on the command line, so any
         # logo entry (even "none") would suppress the launcher's image logo.
-        "display": {"separator": st.get("separator", " : ")},
+        "display": {
+            "separator": st.get("separator", " : "),
+            # Icons come from fastfetch's own per-type keyIcon default rather
+            # than a glyph baked into each key string - see KEY_ICON_MODE.
+            # paddingLeft is the old hand-typed "   " indent, done properly.
+            "key": {"type": KEY_ICON_MODE, "paddingLeft": KEY_PADDING_LEFT},
+        },
         "modules": mods,
     }
 
@@ -497,16 +528,33 @@ def profile_snippet() -> str:
             'if (Test-Path -LiteralPath $ffLauncher) { & $ffLauncher } else { fastfetch.exe }')
 
 
+def write_config(st: dict) -> Path:
+    """Write the base palette to config.jsonc - fastfetch's own user config.
+
+    The launcher passes --config <theme>, so this file is what a bare
+    `fastfetch` picks up (and what any run falls back to if a theme file is
+    missing). Without it fastfetch silently renders whatever else it finds
+    earlier in its search path, which is how a config with a different module
+    list and only some of the icons ended up on screen.
+    """
+    base = palettes_for(st["groups"])[0]
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(
+        dump_jsonc(build_config_json({**st, "groups": base}, base["accent"])), "utf-8")
+    return CONFIG_PATH
+
+
 def apply_all(st: dict) -> str:
-    """Backup config, encode sixels, write themes + launcher, persist state."""
+    """Backup config, encode sixels, write config + themes + launcher, persist state."""
     GUI_DIR.mkdir(parents=True, exist_ok=True)
     if CONFIG_PATH.exists() and not BACKUP_PATH.exists():
         shutil.copyfile(CONFIG_PATH, BACKUP_PATH)
+    write_config(st)
     sixels = ensure_sixels(st)
     themes = generate_theme_files(st)
     generate_launcher(st)
     save_state(st)
-    return f"{len(themes)} themes + {len(sixels)} sixels + launcher written"
+    return f"config + {len(themes)} themes + {len(sixels)} sixels + launcher written"
 
 
 # --------------------------------------------------------------------------- sixel
@@ -1541,6 +1589,14 @@ class App(tk.Tk):
         STATE["randomTheme"] = bool(self.rand_theme.get())
         STATE["frequency"] = self.freq.get()
         save_state(STATE)
+        # Toggling rewrites the launcher, and the launcher passes
+        # --config <theme>. Writing it while the themes it names were absent is
+        # what left fastfetch falling back to a foreign config (the icon bug),
+        # so the config and themes are refreshed here too. Sixels are left
+        # alone: re-encoding every gallery image on a toggle is slow and
+        # changes nothing.
+        write_config(STATE)
+        generate_theme_files(STATE)
         generate_launcher(STATE)
         self.status("Random settings updated in launcher")
 
@@ -1689,6 +1745,105 @@ def smoke_scroll() -> int:
     return 0
 
 
+def _is_pua(ch: str) -> bool:
+    """True for the private-use codepoints Nerd Font glyphs live in."""
+    if not ch:
+        return False
+    o = ord(ch)
+    return (0xE000 <= o <= 0xF8FF          # BMP PUA
+            or 0xF0000 <= o <= 0xFFFFD     # plane 15
+            or 0x100000 <= o <= 0x10FFFD)  # plane 16
+
+
+def _find_fastfetch() -> str | None:
+    cand = USER / ".local" / "bin" / "fastfetch.exe"
+    if cand.exists():
+        return str(cand)
+    return shutil.which("fastfetch") or shutil.which("fastfetch.exe")
+
+
+def smoke_icons() -> int:
+    """Regression guard for the missing-icons bug.
+
+    Two independent checks, because they catch opposite halves of the same
+    mistake. A hand-typed glyph in a key renders *beside* fastfetch's own
+    default, so a config can be wrong in both directions - no icon at all, or
+    two stacked icons - and only one of them is obvious in a screenshot.
+
+    1. Shape: the generated config must switch key icons on, and no `key`
+       string may carry a glyph of its own. Cheap, and needs no fastfetch.
+
+    2. Render: every row fastfetch actually draws with a key must begin with a
+       private-use glyph. This is the end-to-end proof. It needs a real
+       fastfetch and is skipped with a note when there is none - the CI build
+       job has no fastfetch, the setup-verification job does.
+    """
+    st = json.loads(json.dumps(DEFAULT_STATE))
+    themes = [build_config_json({**st, "groups": pal}, pal["accent"])
+              for pal in palettes_for(st["groups"])]
+
+    bad: list[str] = []
+    keyed = 0
+    for i, cfg in enumerate(themes, start=1):
+        dk = cfg.get("display", {}).get("key", {})
+        if dk.get("type") != KEY_ICON_MODE:
+            bad.append(f"theme-{i:02d}: display.key.type is {dk.get('type')!r}, "
+                       f"expected {KEY_ICON_MODE!r} - icons would be off entirely")
+        if int(dk.get("paddingLeft", 0)) != KEY_PADDING_LEFT:
+            bad.append(f"theme-{i:02d}: display.key.paddingLeft is "
+                       f"{dk.get('paddingLeft')!r}, expected {KEY_PADDING_LEFT}")
+        if i > 1:
+            continue
+        for m in cfg["modules"]:
+            if not isinstance(m, dict) or "key" not in m:
+                continue
+            key, kind = m["key"], m["type"]
+            if any(_is_pua(c) for c in key):
+                bad.append(f"theme-01: {kind} key {key!r} carries its own glyph, "
+                           "so it draws a second icon beside fastfetch's default")
+            if kind == "title":
+                if key != NO_KEY:
+                    bad.append(f"theme-01: title key {key!r} is not the no-key "
+                               f"sentinel {NO_KEY!r}")
+            elif not key.strip():
+                bad.append(f"theme-01: {kind} has an empty key")
+            else:
+                keyed += 1
+
+    ff = _find_fastfetch()
+    if ff is not None:
+        sep = st.get("separator", " : ")
+        ansi = re.compile(r"\x1b\[[0-9;]*m")
+        tmp = Path(tempfile.mkdtemp(prefix="ffstudio-icons-"))
+        try:
+            for i, cfg in enumerate(themes, start=1):
+                f = tmp / f"theme-{i:02d}.jsonc"
+                f.write_text(dump_jsonc(cfg), "utf-8")
+                proc = subprocess.run([ff, "--config", str(f), "--logo", "none", "--pipe"],
+                                      capture_output=True)
+                rows = [ansi.sub("", ln).rstrip()
+                        for ln in proc.stdout.decode("utf-8", "replace").splitlines()]
+                rows = [r for r in rows if sep in r]
+                if len(rows) != keyed:
+                    bad.append(f"theme-{i:02d}: fastfetch drew {len(rows)} keyed rows, "
+                               f"expected {keyed}")
+                for r in rows:
+                    if not _is_pua(next((c for c in r if c != " "), "")):
+                        bad.append(f"theme-{i:02d}: row {r.strip()[:40]!r} rendered no icon")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    if bad:
+        print("smoke-icons: FAIL")
+        for b in bad[:12]:
+            print("  ", b)
+        return 1
+    suffix = "" if ff else " [render skipped: no fastfetch on PATH]"
+    print(f"smoke-icons: ok ({len(themes)} themes; all {keyed} keyed modules carry "
+          f"an icon){suffix}")
+    return 0
+
+
 def main() -> int:
     if "--selftest" in sys.argv:
         return selftest()
@@ -1696,6 +1851,8 @@ def main() -> int:
         return smoke_gui()
     if "--smoke-scroll" in sys.argv:
         return smoke_scroll()
+    if "--smoke-icons" in sys.argv:
+        return smoke_icons()
     app = App()
     app.mainloop()
     return 0
