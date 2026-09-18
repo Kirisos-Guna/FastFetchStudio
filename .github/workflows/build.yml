@@ -37,6 +37,13 @@ jobs:
       - name: Smoke test (GUI build + apply)
         run: .\dist\FastFetchStudio.exe --smoke-gui
 
+      # Tk does not clamp the canvas origin when the scroll region is shorter
+      # than the viewport, so a wheel-up nudge with nothing to scroll to used to
+      # push the tab content down the card behind a blank band. Guarded because
+      # it is invisible to yview() and trivial to reintroduce.
+      - name: Scroll origin stays inside the scroll region
+        run: .\dist\FastFetchStudio.exe --smoke-scroll
+
       # The launcher runs on every shell start, so its behaviour is worth
       # pinning: it must draw fastfetch exactly once, and 'once per day' must
       # actually throttle. Both were broken before v1.1.5.

@@ -1024,6 +1024,40 @@ def section(master, title: str, pady=(0, 0)) -> tk.Frame:
     return inner
 
 
+def clamp_scroll(cv: tk.Canvas) -> None:
+    """Pin a scroll canvas' origin back inside its scroll region.
+
+    Tk does NOT clamp `yview_scroll` when the scroll region is SHORTER than the
+    viewport - i.e. when the content fits and there is nothing to scroll to.
+    Scrolling up then walks the canvas origin negative, and because the embedded
+    content frame sits at canvas y=0 it is drawn that many pixels *down* the
+    canvas: the tab shows a blank PANEL band above its content with the bottom
+    of the content pushed out of the card. Measured on this Tk build, six
+    wheel-up notches with `yscrollincrement=40` put the origin at -240.
+
+    Two details make it hard to catch:
+
+    * `yview()` keeps reporting `(0.0, 1.0)` in that state, so anything that
+      reads the view fraction (e.g. `refresh_gallery`'s `keep`) believes the
+      canvas is at the top. `canvasy(0)` is the honest reading.
+    * Re-setting the same `scrollregion` does not repair it; Tk only re-clamps
+      when the region shrinks past a *positive* origin.
+
+    `yview_moveto` *is* clamped, so it is the repair path. Cheap enough to run
+    on every layout pass.
+    """
+    try:
+        x0, y0, x1, y1 = (float(v) for v in str(cv.cget("scrollregion")).split())
+    except (ValueError, tk.TclError):
+        return
+    top = cv.canvasy(0)
+    lo = y0
+    hi = max(y0, y1 - cv.winfo_height())
+    if lo <= top <= hi:
+        return
+    cv.yview_moveto((min(max(top, lo), hi) - y0) / max(1.0, y1 - y0))
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -1125,6 +1159,9 @@ class App(tk.Tk):
             canvas.itemconfigure(win, width=canvas.winfo_width())
             canvas.configure(scrollregion=(0, 0, max(1, content.winfo_reqwidth()),
                                            max(1, content.winfo_reqheight())))
+            # Setting the region is not enough on its own: it does not repair
+            # an origin that already walked negative, so heal it here too.
+            clamp_scroll(canvas)
 
         content.bind("<Configure>", lambda e: canvas.after_idle(sync_scroll))
         canvas.bind("<Configure>", lambda e: canvas.after_idle(sync_scroll))
@@ -1142,8 +1179,17 @@ class App(tk.Tk):
         # Scroll only the canvas owned by the visible tab; the wheel must not
         # move (or blank) anything else.
         cv = self._scroll_canvases.get(getattr(self, "_current_tab", ""))
-        if cv is not None:
-            cv.yview_scroll(-1 * (e.delta // 120), "units")
+        if cv is None or not e.delta:
+            return
+        # Direction from the sign, magnitude from whole notches with a floor of
+        # one increment: `e.delta // 120` truncated toward -inf, so a wheel or
+        # touchpad reporting less than a full 120 notch (common on high-res
+        # devices) either did nothing or inverted the direction.
+        notches = int(abs(e.delta) // 120) or 1
+        cv.yview_scroll(-notches if e.delta > 0 else notches, "units")
+        # Tk leaves the origin unclamped when the content fits, which is what
+        # pushed the tab content down the card; put it back in range.
+        clamp_scroll(cv)
 
     # ---------------------------------------------------------------- status
     def status(self, msg: str):
@@ -1564,11 +1610,92 @@ def smoke_gui() -> int:
     return 0
 
 
+def smoke_scroll() -> int:
+    """Regression guard for the unclamped scroll-origin bug.
+
+    Tk does not clamp `yview_scroll` when the scroll region is shorter than the
+    viewport, so a wheel-up nudge with nothing to scroll to walked the canvas
+    origin negative and pushed the whole tab content down the card. The
+    invariant is simply that the origin never sits above the scroll region.
+    """
+    app = App()
+    for _ in range(8):
+        app.update_idletasks()
+        app.update()
+
+    bad: list[str] = []
+    exercised = 0
+
+    def origin_ok(cv, tag):
+        try:
+            x0, y0, x1, y1 = (float(v) for v in str(cv.cget("scrollregion")).split())
+        except ValueError:
+            return
+        inc = max(1, int(cv.cget("yscrollincrement")))
+        top = cv.canvasy(0)
+        if top < y0 - 0.5:
+            bad.append(f"{tag}: origin {top:.0f} above region top {y0:.0f} "
+                       f"(content pushed {-top:.0f}px down)")
+        elif top > max(y0, y1 - cv.winfo_height()) + inc:
+            bad.append(f"{tag}: origin {top:.0f} past region bottom")
+
+    def spin(delta, n=8):
+        for _ in range(n):
+            app.event_generate("<MouseWheel>", delta=delta, x=50, y=50)
+            app.update_idletasks()
+            app.update()
+
+    for name in ("Gallery", "Theme", "Random"):
+        app._show_tab(name)
+        for _ in range(6):
+            app.update_idletasks()
+            app.update()
+        cv = app._scroll_canvases[name]
+
+        spin(120)
+        origin_ok(cv, f"{name}: after 8 x wheel-up")
+        spin(-120)
+        origin_ok(cv, f"{name}: after 8 x wheel-down")
+
+        # A sub-notch delta (high-resolution wheel / touchpad) must not invert
+        # the direction the way `e.delta // 120` did for negative values.
+        cv.yview_moveto(0.0)
+        app.update_idletasks()
+        before = cv.canvasy(0)
+        app.event_generate("<MouseWheel>", delta=1, x=50, y=50)
+        app.update_idletasks()
+        app.update()
+        if cv.canvasy(0) > before + 0.5:
+            bad.append(f"{name}: delta=+1 inverted the scroll direction")
+
+        # clamp_scroll must repair an origin that already went bad. Forcing the
+        # state directly keeps this meaningful even if this runner's window is
+        # too short for the content to fit (Tk then clamps on its own).
+        cv.yview_scroll(-6, "units")
+        if cv.canvasy(0) < 0:
+            exercised += 1
+            clamp_scroll(cv)
+            if cv.canvasy(0) < -0.5:
+                bad.append(f"{name}: clamp_scroll left origin at {cv.canvasy(0):.0f}")
+
+    app.destroy()
+    if bad:
+        print("smoke-scroll: FAIL")
+        for b in bad:
+            print("  ", b)
+        return 1
+    print(f"smoke-scroll: ok (origin in range on all 3 tabs; "
+          f"repair path exercised on {exercised}/3)")
+    return 0
+
+
 def main() -> int:
     if "--selftest" in sys.argv:
         return selftest()
     if "--smoke-gui" in sys.argv:
         return smoke_gui()
+    if "--smoke-scroll" in sys.argv:
+        return smoke_scroll()
     app = App()
     app.mainloop()
     return 0
