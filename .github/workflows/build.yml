@@ -152,6 +152,91 @@ jobs:
           if ($second -ne 0) { throw "daily frequency drew again the same day ($second invocations)" }
           Write-Host "daily ok (first=$first second=$second)"
 
+      # The launcher can only guess whether a terminal renders images, and a
+      # wrong guess used to swap a chosen logo for the built-in ASCII one with
+      # no explanation and no way out. Pin the branch each host takes, and pin
+      # the escape hatch.
+      - name: Logo mode picks the right branch
+        shell: pwsh
+        run: |
+          python -c "import app; app.generate_launcher({'logWidth':28,'logHeight':24})"
+          $root = Join-Path $env:USERPROFILE '.config\fastfetch'
+          $launcher = Join-Path $root 'fastfetch-random.ps1'
+          if (-not (Test-Path -LiteralPath $launcher)) { throw 'app.py did not write a launcher' }
+
+          # Both image branches need their asset folder to exist.
+          foreach ($d in 'sixels', 'pngs', 'themes', 'gui') {
+            New-Item -ItemType Directory -Path (Join-Path $root $d) -Force | Out-Null
+          }
+          Set-Content -LiteralPath (Join-Path $root 'sixels\demo.sixel') -Value 'x' -NoNewline
+          Set-Content -LiteralPath (Join-Path $root 'pngs\demo.png') -Value 'x' -NoNewline
+          Set-Content -LiteralPath (Join-Path $root 'themes\theme-01.jsonc') -Value '{"modules":[]}'
+          # A pinned logo is what makes the fallback explain itself. No
+          # 'frequency' key on purpose: the previous step left a today-dated
+          # day stamp behind, and 'daily' would return before drawing anything.
+          Set-Content -LiteralPath (Join-Path $root 'gui\studio-state.json') `
+                       -Value '{"randomLogo":false,"defaultImage":"demo.png"}'
+
+          $bin = Join-Path $env:USERPROFILE '.local\bin'
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $bin 'fastfetch.exe') -Value '' -NoNewline
+
+          # Give the two branches distinct log values: counting invocations
+          # cannot tell a sixel draw from the ASCII fallback.
+          $probe = Join-Path $env:TEMP 'logo-probe.ps1'
+          $src = Get-Content -LiteralPath $launcher -Raw
+          $src = $src.Replace('& $ffExe @themeArg @logoArg',
+                              "Add-Content -LiteralPath `$env:FF_LOG -Value 'image'")
+          $src = $src.Replace("& `$ffExe @themeArg --logo 'Windows11' @colorArgs",
+                              "Add-Content -LiteralPath `$env:FF_LOG -Value 'builtin'")
+          Set-Content -LiteralPath $probe -Value $src
+
+          $saved = @('WT_SESSION', 'TERM_PROGRAM', 'WEZTERM_PANE', 'KITTY_WINDOW_ID', 'TERM', 'FASTFETCH_STUDIO_LOGO')
+
+          function Clear-Term {
+            foreach ($k in $saved) { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue }
+          }
+
+          function Get-Branch([hashtable]$overrides) {
+            Clear-Term
+            foreach ($k in $overrides.Keys) { Set-Item "Env:\$k" $overrides[$k] }
+            $env:FF_LOG = Join-Path $env:TEMP 'logo-log.txt'
+            Remove-Item -LiteralPath $env:FF_LOG -Force -ErrorAction SilentlyContinue
+            & $probe *>&1 | Out-Null
+            if (Test-Path -LiteralPath $env:FF_LOG) { return (Get-Content -LiteralPath $env:FF_LOG) -join ',' }
+            return 'none'
+          }
+
+          $cases = @(
+            @{ name = 'conhost';                  over = @{};                                       want = 'builtin' },
+            @{ name = 'windows-terminal';         over = @{ WT_SESSION = 'ci' };                     want = 'image' },
+            @{ name = 'wezterm';                  over = @{ TERM_PROGRAM = 'WezTerm' };             want = 'image' },
+            @{ name = 'kitty';                    over = @{ KITTY_WINDOW_ID = '1' };                want = 'image' },
+            @{ name = 'foot';                     over = @{ TERM = 'foot' };                        want = 'image' },
+            @{ name = 'vs code (no image support)'; over = @{ TERM_PROGRAM = 'vscode' };            want = 'builtin' },
+            @{ name = 'forced builtin in wt';     over = @{ WT_SESSION = 'ci'; FASTFETCH_STUDIO_LOGO = 'builtin' }; want = 'builtin' },
+            @{ name = 'forced image on conhost';  over = @{ FASTFETCH_STUDIO_LOGO = 'image' };      want = 'image' }
+          )
+          foreach ($c in $cases) {
+            $got = Get-Branch $c.over
+            Write-Host ("  {0,-28} -> {1}" -f $c.name, $got)
+            if ($got -ne $c.want) { throw "logo mode '$($c.name)' drew '$got', expected '$($c.want)'" }
+          }
+
+          # The fallback has to say where it happened and how to override it -
+          # that silence is what made "I set a logo and got a Windows logo"
+          # look like a broken app.
+          Clear-Term
+          $env:TERM_PROGRAM = 'vscode'
+          $msg = & $probe *>&1 | Out-String
+          if ($msg -notmatch 'no image support detected in the VS Code terminal') {
+            throw "fallback did not name the terminal: $msg"
+          }
+          if ($msg -notmatch 'FASTFETCH_STUDIO_LOGO') {
+            throw "fallback did not offer the override: $msg"
+          }
+          Write-Host 'logo mode ok (branches pinned; fallback explains itself)'
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

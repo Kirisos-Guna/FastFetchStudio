@@ -86,6 +86,10 @@ DEFAULT_STATE = {
     "frequency": "every",
     "logWidth": 28,
     "logHeight": 24,
+    # How the launcher draws the logo: "auto" trusts its terminal detection,
+    # "image" forces the picture even in a terminal it does not recognise,
+    # "builtin" always uses fastfetch's tinted ASCII logo.
+    "logoMode": "auto",
 }
 
 GROUPS = [
@@ -404,6 +408,7 @@ $pngs    = @($pngDirs | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '
 $statePath = Join-Path $ffRoot 'gui\studio-state.json'
 
 $randLogo = $true; $randTheme = $true; $freq = 'every'; $w = @@W@@; $h = @@H@@; $defaultImg = ''
+$logoMode = 'auto'
 if (Test-Path -LiteralPath $statePath) {
     try {
         $s = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
@@ -415,6 +420,7 @@ if (Test-Path -LiteralPath $statePath) {
         if ($s.logWidth)  { $w = [int]$s.logWidth }
         if ($s.logHeight) { $h = [int]$s.logHeight }
         if ($s.defaultImage) { $defaultImg = [string]$s.defaultImage }
+        if ($s.logoMode) { $logoMode = [string]$s.logoMode }
     } catch {}
 }
 
@@ -438,12 +444,63 @@ if ($randTheme -and $themes.Count -gt 0) {
 }
 
 $logoArg = @()
-# Only attempt image protocols in terminals that can render them:
-# Windows Terminal sets WT_SESSION; WezTerm sets TERM_PROGRAM=WezTerm.
-# Classic conhost supports neither - skip straight to the fallback logo.
+$wantImage = $true
+$ffHost = 'this terminal'
+$ffSixel = $false
+$ffKitty = $false
+
+# --- can this terminal draw an image, and how? ------------------------------
+# Sending image bytes to a terminal that cannot render them prints garbage, so
+# capability is detected rather than assumed. Getting this list wrong is what
+# made a chosen logo silently turn into the built-in ASCII one.
+#   sixel - Windows Terminal / OpenConsole (WT 1.22+), WezTerm, foot, contour,
+#           mlterm, yaft
+#   kitty - kitty, WezTerm, Ghostty
+# Classic conhost draws neither. It is what you get from a bare powershell.exe
+# outside Windows Terminal, a scheduled task, or a redirected run.
+# VS Code and Zed are named only so the fallback can say where it happened.
+# They ship image rendering off (VS Code needs terminal.integrated.gpuAcceleration),
+# so claiming capability there would trade a visible logo for no logo at all.
+if ($env:WT_SESSION) {
+    $ffSixel = $true; $ffHost = 'Windows Terminal'
+} elseif ($env:TERM_PROGRAM -eq 'Windows_Terminal') {
+    $ffSixel = $true; $ffHost = 'Windows Terminal'
+} elseif ($env:WEZTERM_PANE -or $env:TERM_PROGRAM -eq 'WezTerm') {
+    $ffSixel = $true; $ffKitty = $true; $ffHost = 'WezTerm'
+} elseif ($env:KITTY_WINDOW_ID -or $env:TERM -match 'kitty') {
+    $ffKitty = $true; $ffHost = 'kitty'
+} elseif ($env:TERM_PROGRAM -eq 'ghostty') {
+    $ffKitty = $true; $ffHost = 'Ghostty'
+} elseif ($env:TERM -match 'foot|contour|mlterm|yaft') {
+    $ffSixel = $true; $ffHost = [string]$env:TERM
+} elseif ($env:TERM_PROGRAM -eq 'vscode') {
+    $ffHost = 'the VS Code terminal'
+} elseif ($env:TERM_PROGRAM -eq 'zed') {
+    $ffHost = 'the Zed terminal'
+} elseif ($env:TERM_PROGRAM) {
+    $ffHost = [string]$env:TERM_PROGRAM
+}
+
+# --- the user gets the last word -------------------------------------------
+# Detection cannot cover every terminal, so this overrides it:
+#   image   - draw the picture even when the terminal was not recognised
+#   builtin - never draw it, always the tinted ASCII logo
+# Comes from "Logo rendering" in the app; $env:FASTFETCH_STUDIO_LOGO wins over
+# it so a single shell can be tested without touching the saved setting.
+$ffLogoMode = $logoMode
+if (-not $ffLogoMode) { $ffLogoMode = 'auto' }
+if ($env:FASTFETCH_STUDIO_LOGO) { $ffLogoMode = [string]$env:FASTFETCH_STUDIO_LOGO }
+if ($ffLogoMode -eq 'builtin') {
+    $wantImage = $false
+} elseif ($ffLogoMode -eq 'image') {
+    # Keep whatever was detected; if nothing was, try the pre-encoded sixel
+    # first (that is the format the app writes) and kitty-direct after it.
+    if (-not $ffSixel -and -not $ffKitty) { $ffSixel = $true; $ffKitty = $true }
+}
+
 # The .sixel files are pre-encoded by FastFetch Studio (this fastfetch build
 # cannot encode PNG to sixel itself); fastfetch passes the bytes through.
-if ($env:WT_SESSION -and $sixels.Count -gt 0) {
+if ($wantImage -and $ffSixel -and $sixels.Count -gt 0) {
     $six = $null
     if (-not $randLogo) {
         # Random logo OFF: always the chosen default image - never a random substitution.
@@ -462,7 +519,7 @@ if ($env:WT_SESSION -and $sixels.Count -gt 0) {
     # fastfetch the cell size so the fetch is drawn beside (not below) the image.
     $logoArg = @('--logo-type', 'raw', '--logo', $six.FullName,
                  '--logo-width', $w, '--logo-height', $h)
-} elseif ($env:TERM_PROGRAM -eq 'WezTerm' -and $pngs.Count -gt 0) {
+} elseif ($wantImage -and $ffKitty -and $pngs.Count -gt 0) {
     $png = $null
     if (-not $randLogo -and $defaultImg -and (Test-Path -LiteralPath $defaultImg)) {
         $png = Get-Item -LiteralPath $defaultImg
@@ -492,9 +549,17 @@ if ($logoArg.Count -gt 0) {
         & $ffExe @themeArg --logo 'Windows11' @colorArgs
     }
 } else {
-    # No image support in this terminal: tint the built-in ASCII logo with this
-    # theme's accent so the look still changes every run.
+    # No image protocol here: tint the built-in ASCII logo with this theme's
+    # accent so the look still changes every run.
     & $ffExe @themeArg --logo 'Windows11' @colorArgs
+    # Say why - but only when a picture was clearly expected (a pinned default
+    # image, randomisation off). Otherwise every shell that cannot draw images
+    # would print this, which is noise. This is the message whose absence made
+    # "I set a logo and got a Windows logo" look like a broken app.
+    if ($wantImage -and -not $randLogo -and $defaultImg) {
+        Write-Host ('FastFetch Studio: no image support detected in ' + $ffHost + ', so the built-in logo was drawn.') -ForegroundColor DarkGray
+        Write-Host '  force it: $env:FASTFETCH_STUDIO_LOGO = ''image''   (Windows Terminal 1.22+ draws it as-is)' -ForegroundColor DarkGray
+    }
 }
 
 # Remember the day. Without this the 'daily' check above could never match, so
@@ -1576,6 +1641,21 @@ class App(tk.Tk):
         FFToggle(how, "Once per day (same look all day)", self.freq, value="daily",
                  kind="radio", command=self._random_changed).pack(anchor="w", pady=3)
 
+        # The launcher can only guess whether a terminal renders images, and a
+        # wrong guess used to swap a chosen logo for the built-in ASCII one with
+        # no explanation. This is the override for when the guess is wrong.
+        logo = section(f, "HOW THE LOGO IS DRAWN", pady=(12, 0))
+        self.logo_mode = tk.StringVar(value=STATE.get("logoMode", "auto"))
+        FFToggle(logo, "Auto - use the image wherever the terminal can show it",
+                 self.logo_mode, value="auto", kind="radio",
+                 command=self._random_changed).pack(anchor="w", pady=3)
+        FFToggle(logo, "Always draw the image, even in an unrecognised terminal",
+                 self.logo_mode, value="image", kind="radio",
+                 command=self._random_changed).pack(anchor="w", pady=3)
+        FFToggle(logo, "Never - always fastfetch's built-in ASCII logo",
+                 self.logo_mode, value="builtin", kind="radio",
+                 command=self._random_changed).pack(anchor="w", pady=3)
+
         # Aligned columns beat the old flat tk.Text blob, which sat dark-on-dark
         # and relied on hand-counted spaces for its "columns".
         files = section(f, "FILES FASTFETCH STUDIO MANAGES", pady=(12, 0))
@@ -1594,6 +1674,7 @@ class App(tk.Tk):
         STATE["randomLogo"] = bool(self.rand_logo.get())
         STATE["randomTheme"] = bool(self.rand_theme.get())
         STATE["frequency"] = self.freq.get()
+        STATE["logoMode"] = self.logo_mode.get()
         save_state(STATE)
         # Toggling rewrites the launcher, and the launcher passes
         # --config <theme>. Writing it while the themes it names were absent is

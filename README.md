@@ -34,8 +34,9 @@ options, verification, and uninstall.
 - **Theme tab** — key colors per module group (OS, packages, terminal, CPU, driver, title),
   box border style (rounded / double / heavy / ASCII / none) and color, separator text,
   default logo size, palette-block toggle.
-- **Random tab** — choose what randomizes per terminal open (logo, theme) and how often
-  (every window or once per day).
+- **Random tab** — choose what randomizes per terminal open (logo, theme), how often
+  (every window or once per day), and how the logo is drawn (auto / always draw the image /
+  built-in ASCII only).
 - **Live preview** — renders the logo to a real sixel image and opens a preview in
   Windows Terminal.
 - **8 palettes** — your exact colors plus 7 hue-rotated variants are generated so
@@ -53,7 +54,7 @@ options, verification, and uninstall.
 |---|---|
 | `~\.config\fastfetch\config.jsonc` | main fastfetch config (original backed up once to `config.backup.jsonc`) |
 | `~\.config\fastfetch\themes\theme-01..08.jsonc` | the 8 palettes |
-| `~\.config\fastfetch\fastfetch-random.ps1` | picks a random theme + logo each run (sixel on Windows Terminal, kitty-direct on WezTerm, built-in logo fallback). Written by **Apply & Generate**; `setup.ps1` writes a plain bootstrap here so the profile hook works before the app has ever run |
+| `~\.config\fastfetch\fastfetch-random.ps1` | picks a random theme + logo each run. It detects the terminal first — sixel on Windows Terminal (1.22+), WezTerm, foot, contour, mlterm, yaft; the kitty protocol on kitty, WezTerm and Ghostty; fastfetch's tinted ASCII logo anywhere else. Written by **Apply & Generate**; `setup.ps1` writes a plain bootstrap here so the profile hook works before the app has ever run |
 | `~\.config\fastfetch\gui\studio-state.json` | app state (gallery, colors, settings) |
 
 ## Hook it into PowerShell (one time)
@@ -75,6 +76,29 @@ A copy-pasteable snippet with a Copy button is also available inside the app (Th
 
 Or let [setup.ps1](SETUP.md) do the download, the profile edit, *and* write the launcher for
 you — including PowerShell 7+, which the app itself does not configure.
+
+### My logo doesn't show — I get the ASCII Windows logo
+
+Only some terminals can display an image, and image bytes sent to one that cannot render
+them print garbage. So the launcher works out which terminal it is in first: **Windows
+Terminal** (1.22+), **WezTerm**, **foot**, **contour**, **mlterm** and **yaft** get your
+picture over sixel; **kitty**, **WezTerm** and **Ghostty** get it over the kitty protocol.
+Everything else — classic conhost, and the VS Code terminal with
+`terminal.integrated.gpuAcceleration` turned off — gets fastfetch's built-in ASCII logo,
+tinted with that run's theme accent.
+
+If you pinned a default image with randomization off, the launcher now says so instead of
+swapping it out silently:
+
+> FastFetch Studio: no image support detected in the VS Code terminal, so the built-in logo was drawn.
+> force it: $env:FASTFETCH_STUDIO_LOGO = 'image'   (Windows Terminal 1.22+ draws it as-is)
+
+Two ways out:
+
+- **Use Windows Terminal 1.22 or newer.** It draws the image as-is, with no configuration.
+- **Force it** — *Random* tab → **How the logo is drawn** → *Always draw the image*. For a
+  single shell without changing the setting, set `$env:FASTFETCH_STUDIO_LOGO` to `image`
+  (force the picture) or `builtin` (force the ASCII logo) before the fetch runs.
 
 ### Prerequisite: the execution policy must allow scripts
 

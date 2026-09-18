@@ -186,10 +186,16 @@ It found an existing fastfetch invocation. That's the safety check working — r
 line and re-run, or pass `-Force`.
 
 **Windows Terminal shows no logo, or a plain one.**
-Image logos need a terminal that supports them. Windows Terminal renders sixel logos;
-classic `conhost` falls back to fastfetch's built-in logo. Also check that your Windows
-Terminal `settings.json` doesn't launch PowerShell with `-NoProfile`, which skips the
-profile entirely — the script warns you if it spots this.
+Image logos need a terminal that supports them. The launcher detects the terminal and picks
+sixel (Windows Terminal 1.22+, WezTerm, foot, contour, mlterm, yaft), the kitty protocol
+(kitty, WezTerm, Ghostty), or fastfetch's built-in ASCII logo anywhere else — classic
+`conhost`, and the VS Code terminal with `terminal.integrated.gpuAcceleration` off, both land
+in that last group. When you have pinned a default image, the launcher now says which of those
+happened on the line below the fetch instead of swapping it out silently. To override the
+detection, use the *Random* tab → **How the logo is drawn**, or set `FASTFETCH_STUDIO_LOGO`
+to `image` or `builtin` for a single shell. Also check that your Windows Terminal
+`settings.json` doesn't launch PowerShell with `-NoProfile`, which skips the profile entirely
+— the script warns you if it spots this.
 
 **The download fails (proxy, firewall, corporate network).**
 Install fastfetch yourself, then run `.\setup.ps1 -SkipDownload`.
