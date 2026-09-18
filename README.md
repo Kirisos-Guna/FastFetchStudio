@@ -96,6 +96,10 @@ print garbage. So the launcher works out which terminal it is in first:
 | everything else — classic conhost, and the VS Code terminal with `terminal.integrated.gpuAcceleration` off | your image as **block art** |
 | no images uploaded, or *Never* selected on the Random tab | fastfetch's built-in ASCII Windows logo |
 
+The terminal is identified from its environment variables first (`WT_SESSION`, `TERM_PROGRAM`,
+`WEZTERM_PANE`, …) and, failing those, from the process tree — see
+[the logo is sharp in one window and blocky in another](#the-logo-is-sharp-in-one-window-and-blocky-in-another).
+
 Block art is your picture drawn with half-block characters in true colour — one terminal row
 per two image rows, so it carries twice the resolution a single character per pixel would. It
 is coarser than a real image, but it is *your* logo, and it is the only thing that can appear
@@ -113,6 +117,26 @@ Ways out:
 - **Force it** — *Random* tab → **How the logo is drawn** → *Always draw the image*. For a
   single shell without changing the setting, set `$env:FASTFETCH_STUDIO_LOGO` to `image`
   (force the picture) or `builtin` (force the ASCII logo) before the fetch runs.
+
+### The logo is sharp in one window and blocky in another
+
+Same terminal, same picture, two different renders: the crisp image in one window, block art in
+the next, with the `Terminal` line reading *Windows Terminal* in both.
+
+Windows Terminal sets `WT_SESSION` in the shells **it starts**, but not in every session it
+*shows*. When Windows Terminal is the default terminal application, a console created by some
+other process is merely displayed by it and never gets the variable; an elevated shell, or one
+started by a tool that rebuilds the environment, loses it as well. The terminal is still Windows
+Terminal in all of those cases — and fastfetch, which identifies its host from the process tree,
+says so on the `Terminal` line. An environment-only check therefore made the launcher disagree
+with the very fetch it was drawing: it concluded "no image support" and fell back to block art.
+
+The launcher now also walks the process tree for `WindowsTerminal.exe`, so a Windows Terminal
+session without `WT_SESSION` still gets the sixel. That check runs **after** the terminals that
+name themselves (VS Code, Zed, WezTerm, kitty, Ghostty), because an editor opened from a Windows
+Terminal tab keeps `WindowsTerminal.exe` in its process tree while its own terminal still cannot
+draw sixel. A console Windows Terminal merely *hosts* has no `WindowsTerminal.exe` above it, so
+it keeps the block art — the same verdict fastfetch reaches when it calls that terminal `dumb`.
 
 ### The fetch prints twice, in two different colours
 

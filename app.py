@@ -468,6 +468,28 @@ $ffHost = 'this terminal'
 $ffSixel = $false
 $ffKitty = $false
 
+# Windows Terminal sets WT_SESSION in the shells it starts - but not in every
+# session it *shows*. When it is the default terminal application, a console
+# created by some other process is merely displayed by WT and WT never gets to
+# add the variable; an elevated shell, or one started by a tool that rebuilds
+# the environment, loses it as well. The terminal is still Windows Terminal in
+# all of those cases, and fastfetch - which identifies its host from the process
+# tree rather than the environment - says so. An env-only check therefore made
+# the launcher disagree with the fetch it was drawing: the same terminal got the
+# crisp sixel logo in one window and the block-art fallback in another. Ask the
+# same question the same way.
+function Test-WindowsTerminalHost {
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction SilentlyContinue
+    $depth = 0
+    while ($proc -and $depth -lt 8) {
+        if ($proc.Name -like 'WindowsTerminal*') { return $true }
+        if (-not $proc.ParentProcessId) { return $false }
+        $proc = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $proc.ParentProcessId) -ErrorAction SilentlyContinue
+        $depth++
+    }
+    return $false
+}
+
 # --- can this terminal draw an image, and how? ------------------------------
 # Sending image bytes to a terminal that cannot render them prints garbage, so
 # capability is detected rather than assumed. Getting this list wrong is what
@@ -496,6 +518,11 @@ if ($env:WT_SESSION) {
     $ffHost = 'the VS Code terminal'
 } elseif ($env:TERM_PROGRAM -eq 'zed') {
     $ffHost = 'the Zed terminal'
+} elseif (Test-WindowsTerminalHost) {
+    # Deliberately after the terminals that name themselves: an editor opened
+    # *from* a Windows Terminal tab keeps WindowsTerminal.exe in its process
+    # tree, and its own terminal still cannot draw sixel.
+    $ffSixel = $true; $ffHost = 'Windows Terminal'
 } elseif ($env:TERM_PROGRAM) {
     $ffHost = [string]$env:TERM_PROGRAM
 }

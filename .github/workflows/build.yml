@@ -225,14 +225,14 @@ jobs:
             foreach ($k in $saved) { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue }
           }
 
-          function Get-Branch([hashtable]$overrides) {
+          function Get-Branch([hashtable]$overrides, [string]$Script = $probe) {
             Clear-Term
             # Each case models a fresh shell.
             $global:FastFetchStudioDrawn = $false
             foreach ($k in $overrides.Keys) { Set-Item "Env:\$k" $overrides[$k] }
             $env:FF_LOG = Join-Path $env:TEMP 'logo-log.txt'
             Remove-Item -LiteralPath $env:FF_LOG -Force -ErrorAction SilentlyContinue
-            & $probe *>&1 | Out-Null
+            & $Script *>&1 | Out-Null
             if (Test-Path -LiteralPath $env:FF_LOG) { return (Get-Content -LiteralPath $env:FF_LOG) -join ',' }
             return 'none'
           }
@@ -261,6 +261,38 @@ jobs:
           if ($noArt -ne 'fallback=Windows11') {
             throw "without art the launcher drew '$noArt', expected the built-in logo"
           }
+
+          # A Windows Terminal tab that has no WT_SESSION - WT displaying a
+          # console some other process created, an elevated shell, or a shell
+          # whose environment was rebuilt - is still Windows Terminal, and
+          # fastfetch says so because it reads the process tree. The env-only
+          # check used to conclude "no image support" and draw block art, which
+          # is how the same terminal produced a crisp logo in one window and a
+          # pixelated one in the next.
+          $hostProbe = Join-Path $env:TEMP 'logo-probe-host.ps1'
+          Set-Content -LiteralPath $hostProbe -Value `
+            $src.Replace('elseif (Test-WindowsTerminalHost) {', 'elseif ($true) {')
+          $viaTree = Get-Branch @{} $hostProbe
+          Write-Host ("  {0,-28} -> {1}" -f 'wt tab, WT_SESSION gone', $viaTree)
+          if ($viaTree -ne 'image') {
+            throw "a Windows Terminal tab without WT_SESSION drew '$viaTree', expected the sixel"
+          }
+
+          # It has to be a fallback, not a replacement: an editor opened from a
+          # Windows Terminal tab keeps WindowsTerminal.exe in its process tree,
+          # and that editor's own terminal still cannot draw sixel.
+          $body  = Get-Content -LiteralPath $launcher -Raw
+          $iCall = $body.IndexOf('elseif (Test-WindowsTerminalHost) {')
+          $iCode = $body.IndexOf("TERM_PROGRAM -eq 'vscode'")
+          $iGen  = $body.IndexOf('elseif ($env:TERM_PROGRAM) {')
+          if ($body -notmatch 'function Test-WindowsTerminalHost') {
+            throw 'the launcher cannot recognise a Windows Terminal host without WT_SESSION'
+          }
+          if ($iCall -lt 0 -or $iCode -lt 0 -or $iGen -lt 0 -or
+              $iCode -gt $iCall -or $iCall -gt $iGen) {
+            throw 'the process-tree check must sit between the named terminals and the generic TERM_PROGRAM fallback'
+          }
+          Write-Host 'host detection ok (process tree consulted, but only after the named terminals)'
 
           # With no art and no image support, the fallback has to say where it
           # happened and how to override it - that silence is what made

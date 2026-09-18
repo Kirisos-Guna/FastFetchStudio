@@ -153,8 +153,9 @@ def encode_sixel(im: Image.Image) -> bytes:
 def decode_sixel_pixels(data: bytes) -> tuple[int, int, dict]:
     """Decode sixel (as emitted by encode_sixel) to (width, height, pixels).
 
-    pixels: {(x, y): (r, g, b)} for every painted pixel - used by the
-    selftest to round-trip-verify the encoder.
+    pixels: {y: {x: (r, g, b)}} - only painted pixels appear, so a caller can
+    render transparency as whatever background it likes. Used by the selftest to
+    round-trip-verify the encoder.
     """
     hdr = b"P0;1q"
     assert data.startswith(hdr) and data.endswith(b"\\"), "malformed sixel"
