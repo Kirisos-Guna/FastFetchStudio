@@ -44,7 +44,8 @@ except ImportError:
 
 try:
     from sixel_codec import (ALPHA_THRESHOLD, decode_sixel_pixels,
-                             encode_sixel, fit_image_cells, quantize_rgb)
+                             encode_sixel, fit_image_cells, quantize_rgb,
+                             render_ansi_art)
     HAVE_SIXEL = True
 except Exception:
     HAVE_SIXEL = False
@@ -61,6 +62,8 @@ CONFIG_PATH = FF_DIR / "config.jsonc"
 BACKUP_PATH = FF_DIR / "config.backup.jsonc"
 PREVIEW_CACHE = GUI_DIR / "preview.sixel"
 SIXELS_DIR = FF_DIR / "sixels"
+# Block-art logos for terminals that cannot display an image protocol at all.
+ARTS_DIR = FF_DIR / "arts"
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 
@@ -148,6 +151,8 @@ MANAGED_FILES = [
     ("themes\\theme-01..08.jsonc", "generated color palettes"),
     ("fastfetch-random.ps1", "picks a random theme + logo on each run"),
     ("pngs\\", "your uploaded images (converted to PNG)"),
+    ("sixels\\", "pre-encoded logos for image-capable terminals"),
+    ("arts\\", "block-art logos for terminals that can show no image"),
 ]
 
 
@@ -362,6 +367,16 @@ LAUNCHER_TEMPLATE = r"""# >>> FastFetch Studio :: launcher >>>
 # when something is actually wrong.
 $ErrorActionPreference = 'SilentlyContinue'
 
+# --- draw once per shell session -------------------------------------------
+# A profile can end up with two fastfetch calls: setup.ps1's managed block, and
+# the documented snippet pasted in afterwards without removing it. Both run, so
+# the fetch is printed twice, each with its own random theme - which looks like
+# a broken launcher. The marker is a global variable rather than an environment
+# variable on purpose: $env: is inherited by child processes, so a nested shell
+# would inherit it and draw nothing at all.
+if ($global:FastFetchStudioDrawn) { return }
+$global:FastFetchStudioDrawn = $true
+
 # --- where things live -----------------------------------------------------
 # $env:USERPROFILE is normally set, but it is missing in some hosts (services,
 # scheduled tasks, a shell started under a different profile). Fall back rather
@@ -403,6 +418,7 @@ if (-not $ffExe) {
 
 $themes = @(Get-ChildItem -LiteralPath (Join-Path $ffRoot 'themes') -Filter 'theme-*.jsonc' -File -ErrorAction SilentlyContinue)
 $sixels = @(Get-ChildItem -LiteralPath (Join-Path $ffRoot 'sixels') -Filter '*.sixel' -File -ErrorAction SilentlyContinue)
+$arts   = @(Get-ChildItem -LiteralPath (Join-Path $ffRoot 'arts') -Filter '*.art' -File -ErrorAction SilentlyContinue)
 $pngDirs = @((Join-Path $ffRoot 'pngs'), (Join-Path $ffRoot 'images'))
 $pngs    = @($pngDirs | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.png' -File -Recurse -ErrorAction SilentlyContinue } | Sort-Object FullName -Unique)
 $statePath = Join-Path $ffRoot 'gui\studio-state.json'
@@ -549,14 +565,34 @@ if ($logoArg.Count -gt 0) {
         & $ffExe @themeArg --logo 'Windows11' @colorArgs
     }
 } else {
-    # No image protocol here: tint the built-in ASCII logo with this theme's
-    # accent so the look still changes every run.
-    & $ffExe @themeArg --logo 'Windows11' @colorArgs
+    # No image protocol here. fastfetch prints a *text* logo file verbatim, ANSI
+    # escapes and all, so the block art FastFetch Studio pre-rendered gives the
+    # user their own picture at block resolution rather than a Windows logo.
+    # fastfetch's tinted ASCII logo is the last resort.
+    $fbLogo = 'Windows11'
+    if ($wantImage -and $arts.Count -gt 0) {
+        $art = $null
+        if (-not $randLogo) {
+            if ($defaultImg) {
+                $stem = [IO.Path]::GetFileNameWithoutExtension($defaultImg)
+                $key  = ($stem -replace '[^A-Za-z0-9]+', '-').Trim('-')
+                if (-not $key) { $key = 'img' }
+                $cand = Join-Path (Join-Path $ffRoot 'arts') ($key + '.art')
+                if (Test-Path -LiteralPath $cand) { $art = Get-Item -LiteralPath $cand }
+            }
+            if (-not $art) { $art = $arts | Select-Object -First 1 }
+        } else {
+            $art = Get-Random -InputObject $arts
+        }
+        if ($art) { $fbLogo = $art.FullName }
+    }
+    & $ffExe @themeArg --logo $fbLogo @colorArgs
     # Say why - but only when a picture was clearly expected (a pinned default
-    # image, randomisation off). Otherwise every shell that cannot draw images
-    # would print this, which is noise. This is the message whose absence made
-    # "I set a logo and got a Windows logo" look like a broken app.
-    if ($wantImage -and -not $randLogo -and $defaultImg) {
+    # image, randomisation off) and the block art could not be used either.
+    # Otherwise every shell that cannot draw images would print this, which is
+    # noise. This is the message whose absence made "I set a logo and got a
+    # Windows logo" look like a broken app.
+    if ($fbLogo -eq 'Windows11' -and $wantImage -and -not $randLogo -and $defaultImg) {
         Write-Host ('FastFetch Studio: no image support detected in ' + $ffHost + ', so the built-in logo was drawn.') -ForegroundColor DarkGray
         Write-Host '  force it: $env:FASTFETCH_STUDIO_LOGO = ''image''   (Windows Terminal 1.22+ draws it as-is)' -ForegroundColor DarkGray
     }
@@ -622,10 +658,12 @@ def apply_all(st: dict) -> str:
         shutil.copyfile(CONFIG_PATH, BACKUP_PATH)
     write_config(st)
     sixels = ensure_sixels(st)
+    arts = ensure_arts(st)
     themes = generate_theme_files(st)
     generate_launcher(st)
     save_state(st)
-    return f"config + {len(themes)} themes + {len(sixels)} sixels + launcher written"
+    return (f"config + {len(themes)} themes + {len(sixels)} sixels + "
+            f"{len(arts)} art + launcher written")
 
 
 # --------------------------------------------------------------------------- sixel
@@ -655,6 +693,39 @@ def ensure_sixels(st: dict) -> list[Path]:
         try:
             with Image.open(src) as im:
                 dst.write_bytes(encode_sixel(fit_image_cells(im, gw, gh)))
+            written.append(dst)
+        except Exception:
+            continue
+    return written
+
+
+def ensure_arts(st: dict) -> list[Path]:
+    """Render every gallery image to arts\\*.art block art.
+
+    Terminals that can display no image protocol at all - the Windows console
+    host being the common one - would otherwise only ever show fastfetch's
+    built-in ASCII logo. fastfetch prints a *text* logo file verbatim, ANSI
+    escapes included, so the user's own picture can still appear there.
+    """
+    if not HAVE_PIL:
+        return []
+    ARTS_DIR.mkdir(parents=True, exist_ok=True)
+    for stale in ARTS_DIR.glob('*.art'):
+        stale.unlink()   # never leave stale encodes from older versions
+    cells_w = int(st.get("logWidth", 28))
+    cells_h = int(st.get("logHeight", 24))
+    written = []
+    for g in st.get("gallery", []):
+        src = Path(g.get("path", ""))
+        if not src.exists():
+            continue
+        gw = int(g.get("w", cells_w)); gh = int(g.get("h", cells_h))
+        key = re.sub(r"[^A-Za-z0-9]+", "-", src.stem).strip("-") or "img"
+        dst = ARTS_DIR / f"{key}.art"
+        try:
+            with Image.open(src) as im:
+                rows = render_ansi_art(im, gw, gh)
+            dst.write_text("\n".join(rows) + "\n", "utf-8", newline="\n")
             written.append(dst)
         except Exception:
             continue

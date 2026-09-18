@@ -86,10 +86,15 @@ jobs:
           $src = Get-Content -LiteralPath $launcher -Raw
           $src = $src.Replace('& $ffExe @themeArg @logoArg', $log)
           $src = $src.Replace("& `$ffExe @themeArg --logo 'Windows11' @colorArgs", $log)
+          $src = $src.Replace('& $ffExe @themeArg --logo $fbLogo @colorArgs', $log)
           Set-Content -LiteralPath $probe -Value $src
 
           function Count-Runs([int]$rc) {
             $env:FF_RC = $rc
+            # Each call models a fresh shell, so clear the once-per-session guard
+            # the launcher now keeps - otherwise every call after the first
+            # would be suppressed and every count would read 0.
+            $global:FastFetchStudioDrawn = $false
             Remove-Item -LiteralPath $inv -Force -ErrorAction SilentlyContinue
             & $probe | Out-Null
             if (Test-Path -LiteralPath $inv) { return @(Get-Content -LiteralPath $inv).Count }
@@ -152,6 +157,25 @@ jobs:
           if ($second -ne 0) { throw "daily frequency drew again the same day ($second invocations)" }
           Write-Host "daily ok (first=$first second=$second)"
 
+          # A profile can hold two fastfetch calls - setup.ps1's managed block
+          # plus the documented snippet pasted in afterwards - and the user then
+          # sees the fetch twice, each with its own random theme. Unlike
+          # Count-Runs this deliberately does NOT reset the guard, so it models
+          # two calls in one shell.
+          # The daily test above left frequency=daily plus a today-dated stamp,
+          # which would return before drawing anything at all.
+          Set-Content -LiteralPath (Join-Path $gui 'studio-state.json') `
+                       -Value '{"randomLogo":false,"defaultImage":"demo.png"}'
+          Remove-Item -LiteralPath $stamp -Force -ErrorAction SilentlyContinue
+          $global:FastFetchStudioDrawn = $false
+          $env:FF_RC = 0
+          Remove-Item -LiteralPath $inv -Force -ErrorAction SilentlyContinue
+          & $probe | Out-Null
+          & $probe | Out-Null
+          $twice = if (Test-Path -LiteralPath $inv) { @(Get-Content -LiteralPath $inv).Count } else { 0 }
+          if ($twice -ne 1) { throw "two calls in one shell drew $twice times, expected 1" }
+          Write-Host 'once-per-session guard ok (2 calls in one shell -> 1 draw)'
+
       # The launcher can only guess whether a terminal renders images, and a
       # wrong guess used to swap a chosen logo for the built-in ASCII one with
       # no explanation and no way out. Pin the branch each host takes, and pin
@@ -164,12 +188,13 @@ jobs:
           $launcher = Join-Path $root 'fastfetch-random.ps1'
           if (-not (Test-Path -LiteralPath $launcher)) { throw 'app.py did not write a launcher' }
 
-          # Both image branches need their asset folder to exist.
-          foreach ($d in 'sixels', 'pngs', 'themes', 'gui') {
+          # Every branch needs its asset folder to exist.
+          foreach ($d in 'sixels', 'pngs', 'themes', 'gui', 'arts') {
             New-Item -ItemType Directory -Path (Join-Path $root $d) -Force | Out-Null
           }
           Set-Content -LiteralPath (Join-Path $root 'sixels\demo.sixel') -Value 'x' -NoNewline
           Set-Content -LiteralPath (Join-Path $root 'pngs\demo.png') -Value 'x' -NoNewline
+          Set-Content -LiteralPath (Join-Path $root 'arts\demo.art') -Value 'art' -NoNewline
           Set-Content -LiteralPath (Join-Path $root 'themes\theme-01.jsonc') -Value '{"modules":[]}'
           # A pinned logo is what makes the fallback explain itself. No
           # 'frequency' key on purpose: the previous step left a today-dated
@@ -181,14 +206,17 @@ jobs:
           New-Item -ItemType Directory -Path $bin -Force | Out-Null
           Set-Content -LiteralPath (Join-Path $bin 'fastfetch.exe') -Value '' -NoNewline
 
-          # Give the two branches distinct log values: counting invocations
-          # cannot tell a sixel draw from the ASCII fallback.
+          # Give each branch a distinct log value: counting invocations cannot
+          # tell a sixel draw from the block art from the ASCII fallback. The
+          # final branch is shared by art and builtin, so it logs the leaf name.
           $probe = Join-Path $env:TEMP 'logo-probe.ps1'
           $src = Get-Content -LiteralPath $launcher -Raw
           $src = $src.Replace('& $ffExe @themeArg @logoArg',
                               "Add-Content -LiteralPath `$env:FF_LOG -Value 'image'")
           $src = $src.Replace("& `$ffExe @themeArg --logo 'Windows11' @colorArgs",
                               "Add-Content -LiteralPath `$env:FF_LOG -Value 'builtin'")
+          $src = $src.Replace('& $ffExe @themeArg --logo $fbLogo @colorArgs',
+                              "Add-Content -LiteralPath `$env:FF_LOG -Value ('fallback=' + (Split-Path -Leaf `$fbLogo))")
           Set-Content -LiteralPath $probe -Value $src
 
           $saved = @('WT_SESSION', 'TERM_PROGRAM', 'WEZTERM_PANE', 'KITTY_WINDOW_ID', 'TERM', 'FASTFETCH_STUDIO_LOGO')
@@ -199,6 +227,8 @@ jobs:
 
           function Get-Branch([hashtable]$overrides) {
             Clear-Term
+            # Each case models a fresh shell.
+            $global:FastFetchStudioDrawn = $false
             foreach ($k in $overrides.Keys) { Set-Item "Env:\$k" $overrides[$k] }
             $env:FF_LOG = Join-Path $env:TEMP 'logo-log.txt'
             Remove-Item -LiteralPath $env:FF_LOG -Force -ErrorAction SilentlyContinue
@@ -208,14 +238,14 @@ jobs:
           }
 
           $cases = @(
-            @{ name = 'conhost';                  over = @{};                                       want = 'builtin' },
-            @{ name = 'windows-terminal';         over = @{ WT_SESSION = 'ci' };                     want = 'image' },
-            @{ name = 'wezterm';                  over = @{ TERM_PROGRAM = 'WezTerm' };             want = 'image' },
-            @{ name = 'kitty';                    over = @{ KITTY_WINDOW_ID = '1' };                want = 'image' },
-            @{ name = 'foot';                     over = @{ TERM = 'foot' };                        want = 'image' },
-            @{ name = 'vs code (no image support)'; over = @{ TERM_PROGRAM = 'vscode' };            want = 'builtin' },
-            @{ name = 'forced builtin in wt';     over = @{ WT_SESSION = 'ci'; FASTFETCH_STUDIO_LOGO = 'builtin' }; want = 'builtin' },
-            @{ name = 'forced image on conhost';  over = @{ FASTFETCH_STUDIO_LOGO = 'image' };      want = 'image' }
+            @{ name = 'conhost -> block art';        over = @{};                                       want = 'fallback=demo.art' },
+            @{ name = 'windows-terminal';            over = @{ WT_SESSION = 'ci' };                     want = 'image' },
+            @{ name = 'wezterm';                     over = @{ TERM_PROGRAM = 'WezTerm' };             want = 'image' },
+            @{ name = 'kitty';                       over = @{ KITTY_WINDOW_ID = '1' };                want = 'image' },
+            @{ name = 'foot';                        over = @{ TERM = 'foot' };                        want = 'image' },
+            @{ name = 'vs code (no image support)';  over = @{ TERM_PROGRAM = 'vscode' };              want = 'fallback=demo.art' },
+            @{ name = 'forced builtin in wt';        over = @{ WT_SESSION = 'ci'; FASTFETCH_STUDIO_LOGO = 'builtin' }; want = 'fallback=Windows11' },
+            @{ name = 'forced image on conhost';     over = @{ FASTFETCH_STUDIO_LOGO = 'image' };      want = 'image' }
           )
           foreach ($c in $cases) {
             $got = Get-Branch $c.over
@@ -223,10 +253,20 @@ jobs:
             if ($got -ne $c.want) { throw "logo mode '$($c.name)' drew '$got', expected '$($c.want)'" }
           }
 
-          # The fallback has to say where it happened and how to override it -
-          # that silence is what made "I set a logo and got a Windows logo"
-          # look like a broken app.
+          # With no block art to fall back on, fastfetch's ASCII logo is the last
+          # resort.
+          Remove-Item -LiteralPath (Join-Path $root 'arts') -Recurse -Force
+          $noArt = Get-Branch @{}
+          Write-Host ("  {0,-28} -> {1}" -f 'conhost, no art at all', $noArt)
+          if ($noArt -ne 'fallback=Windows11') {
+            throw "without art the launcher drew '$noArt', expected the built-in logo"
+          }
+
+          # With no art and no image support, the fallback has to say where it
+          # happened and how to override it - that silence is what made
+          # "I set a logo and got a Windows logo" look like a broken app.
           Clear-Term
+          $global:FastFetchStudioDrawn = $false
           $env:TERM_PROGRAM = 'vscode'
           $msg = & $probe *>&1 | Out-String
           if ($msg -notmatch 'no image support detected in the VS Code terminal') {
@@ -235,7 +275,7 @@ jobs:
           if ($msg -notmatch 'FASTFETCH_STUDIO_LOGO') {
             throw "fallback did not offer the override: $msg"
           }
-          Write-Host 'logo mode ok (branches pinned; fallback explains itself)'
+          Write-Host 'logo mode ok (branches pinned; art fallback; fallback explains itself)'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

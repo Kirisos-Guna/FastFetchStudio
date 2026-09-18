@@ -54,7 +54,8 @@ options, verification, and uninstall.
 |---|---|
 | `~\.config\fastfetch\config.jsonc` | main fastfetch config (original backed up once to `config.backup.jsonc`) |
 | `~\.config\fastfetch\themes\theme-01..08.jsonc` | the 8 palettes |
-| `~\.config\fastfetch\fastfetch-random.ps1` | picks a random theme + logo each run. It detects the terminal first — sixel on Windows Terminal (1.22+), WezTerm, foot, contour, mlterm, yaft; the kitty protocol on kitty, WezTerm and Ghostty; fastfetch's tinted ASCII logo anywhere else. Written by **Apply & Generate**; `setup.ps1` writes a plain bootstrap here so the profile hook works before the app has ever run |
+| `~\.config\fastfetch\fastfetch-random.ps1` | picks a random theme + logo each run, and draws once per shell session. It detects the terminal first — sixel on Windows Terminal (1.22+), WezTerm, foot, contour, mlterm, yaft; the kitty protocol on kitty, WezTerm and Ghostty; block art from `arts\` anywhere else; fastfetch's tinted ASCII logo as the last resort. Written by **Apply & Generate**; `setup.ps1` writes a plain bootstrap here so the profile hook works before the app has ever run |
+| `~\.config\fastfetch\arts\*.art` | your logos pre-rendered as truecolour block art, for terminals that can display no image protocol |
 | `~\.config\fastfetch\gui\studio-state.json` | app state (gallery, colors, settings) |
 
 ## Hook it into PowerShell (one time)
@@ -79,26 +80,43 @@ you — including PowerShell 7+, which the app itself does not configure.
 
 ### My logo doesn't show — I get the ASCII Windows logo
 
-Only some terminals can display an image, and image bytes sent to one that cannot render
-them print garbage. So the launcher works out which terminal it is in first: **Windows
-Terminal** (1.22+), **WezTerm**, **foot**, **contour**, **mlterm** and **yaft** get your
-picture over sixel; **kitty**, **WezTerm** and **Ghostty** get it over the kitty protocol.
-Everything else — classic conhost, and the VS Code terminal with
-`terminal.integrated.gpuAcceleration` turned off — gets fastfetch's built-in ASCII logo,
-tinted with that run's theme accent.
+Only some terminals can display an image, and image bytes sent to one that cannot render them
+print garbage. So the launcher works out which terminal it is in first:
 
-If you pinned a default image with randomization off, the launcher now says so instead of
-swapping it out silently:
+| Terminal | How your logo is drawn |
+|---|---|
+| Windows Terminal (1.22+), WezTerm, foot, contour, mlterm, yaft | your image, over sixel |
+| kitty, WezTerm, Ghostty | your image, over the kitty protocol |
+| everything else — classic conhost, and the VS Code terminal with `terminal.integrated.gpuAcceleration` off | your image as **block art** |
+| no images uploaded, or *Never* selected on the Random tab | fastfetch's built-in ASCII Windows logo |
+
+Block art is your picture drawn with half-block characters in true colour — one terminal row
+per two image rows, so it carries twice the resolution a single character per pixel would. It
+is coarser than a real image, but it is *your* logo, and it is the only thing that can appear
+in a terminal that supports no image protocol at all.
+
+If even the block art is unavailable, the launcher says so rather than swapping your logo out
+in silence:
 
 > FastFetch Studio: no image support detected in the VS Code terminal, so the built-in logo was drawn.
 > force it: $env:FASTFETCH_STUDIO_LOGO = 'image'   (Windows Terminal 1.22+ draws it as-is)
 
-Two ways out:
+Ways out:
 
-- **Use Windows Terminal 1.22 or newer.** It draws the image as-is, with no configuration.
+- **Use Windows Terminal 1.22 or newer** for the real image, with no configuration.
 - **Force it** — *Random* tab → **How the logo is drawn** → *Always draw the image*. For a
   single shell without changing the setting, set `$env:FASTFETCH_STUDIO_LOGO` to `image`
   (force the picture) or `builtin` (force the ASCII logo) before the fetch runs.
+
+### The fetch prints twice, in two different colours
+
+Your `$PROFILE` has two fastfetch calls in it — most often `setup.ps1`'s managed block *plus*
+the snippet above pasted in afterwards without removing it. Each call picks its own random
+theme, so you get the fetch twice in two colour schemes.
+
+The launcher now draws **once per shell session**, so a second call is a no-op. To stop it
+being called at all, delete whichever of the two you do not want — `setup.ps1 -Uninstall`
+removes its own block, or delete the pasted lines by hand.
 
 ### Prerequisite: the execution policy must allow scripts
 

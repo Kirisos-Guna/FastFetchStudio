@@ -12,6 +12,64 @@ from PIL import Image
 
 ALPHA_THRESHOLD = 128  # >= paints, < stays transparent (sixel has no partial alpha)
 
+UPPER_HALF = "\u2580"  # fg paints the top pixel of a cell, bg paints the bottom
+LOWER_HALF = "\u2584"
+RESET = "\x1b[0m"
+
+
+def render_ansi_art(im: Image.Image, cells_w: int, cells_h: int) -> list[str]:
+    """Render an image as truecolor half-block art: one string per terminal row.
+
+    Some terminals cannot display any image protocol - the Windows console host
+    is the common one - and there fastfetch can only draw its built-in ASCII
+    logo. A text logo file, on the other hand, is printed verbatim, ANSI escapes
+    and all, so this is what FastFetch Studio hands fastfetch on those terminals:
+    the user's own picture, in colour, at block resolution.
+
+    One character cell carries two image pixels (foreground paints the upper,
+    background the lower), which doubles the vertical resolution. A cell is
+    about twice as tall as it is wide, so the aspect fit works in screen units
+    of 1x2 per cell.
+    """
+    im = im.convert("RGBA")
+    src_ratio = im.width / max(1, im.height)
+    avail_w, avail_h = cells_w, cells_h * 2
+    if src_ratio >= avail_w / float(avail_h):
+        draw_w, draw_h = avail_w, max(2, int(round(avail_w / src_ratio)))
+    else:
+        draw_h, draw_w = avail_h, max(1, int(round(avail_h * src_ratio)))
+    draw_h -= draw_h % 2                      # whole cell rows only
+    small = im.resize((draw_w, max(2, draw_h)), Image.LANCZOS)
+    pad = max(0, (avail_w - draw_w) // 2)
+
+    rows = []
+    for y in range(0, small.height - 1, 2):
+        # A row starts in the default state: the previous row ended with RESET.
+        parts = [" " * pad]
+        painted = False
+        for x in range(small.width):
+            top = small.getpixel((x, y))
+            bot = small.getpixel((x, y + 1))
+            top_on, bot_on = top[3] >= ALPHA_THRESHOLD, bot[3] >= ALPHA_THRESHOLD
+            if top_on and bot_on:
+                # Sets both channels, so no reset is needed first.
+                parts.append("\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm%s"
+                             % (top[0], top[1], top[2], bot[0], bot[1], bot[2], UPPER_HALF))
+                painted = True
+            elif top_on or bot_on:
+                # Only one channel is known, so clear the other one first.
+                px, glyph = (top, UPPER_HALF) if top_on else (bot, LOWER_HALF)
+                parts.append(RESET + "\x1b[38;2;%d;%d;%dm%s" % (px[0], px[1], px[2], glyph))
+                painted = True
+            else:
+                # A space would inherit whatever background is still active.
+                if painted:
+                    parts.append(RESET)
+                    painted = False
+                parts.append(" ")
+        rows.append("".join(parts) + RESET)
+    return rows
+
 
 def quantize_rgb(im: Image.Image) -> Image.Image:
     """Quantize the RGB channels to <=256 colors (returns RGB image)."""

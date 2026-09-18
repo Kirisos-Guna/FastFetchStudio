@@ -185,17 +185,23 @@ path `%USERPROFILE%\.local\bin\fastfetch.exe`.
 It found an existing fastfetch invocation. That's the safety check working — remove that
 line and re-run, or pass `-Force`.
 
-**Windows Terminal shows no logo, or a plain one.**
+**The logo is a plain Windows logo, not my image.**
 Image logos need a terminal that supports them. The launcher detects the terminal and picks
 sixel (Windows Terminal 1.22+, WezTerm, foot, contour, mlterm, yaft), the kitty protocol
-(kitty, WezTerm, Ghostty), or fastfetch's built-in ASCII logo anywhere else — classic
-`conhost`, and the VS Code terminal with `terminal.integrated.gpuAcceleration` off, both land
-in that last group. When you have pinned a default image, the launcher now says which of those
-happened on the line below the fetch instead of swapping it out silently. To override the
+(kitty, WezTerm, Ghostty), or **block art** — your picture pre-rendered in true colour — for
+anything else, which covers classic `conhost` and the VS Code terminal with
+`terminal.integrated.gpuAcceleration` off. fastfetch's built-in ASCII logo is the last resort,
+and the launcher says so on the line below the fetch when it gets that far. To override the
 detection, use the *Random* tab → **How the logo is drawn**, or set `FASTFETCH_STUDIO_LOGO`
 to `image` or `builtin` for a single shell. Also check that your Windows Terminal
 `settings.json` doesn't launch PowerShell with `-NoProfile`, which skips the profile entirely
 — the script warns you if it spots this.
+
+**The fetch is printed twice, in two colour schemes.**
+Your profile has two fastfetch calls — `setup.ps1`'s managed block, and the documented snippet
+pasted in afterwards without removing it. Each call picks its own random theme, so you get two
+fetches. The launcher now draws once per shell session, so the second call does nothing;
+`setup.ps1 -Uninstall` removes its own block, or delete the pasted lines by hand.
 
 **The download fails (proxy, firewall, corporate network).**
 Install fastfetch yourself, then run `.\setup.ps1 -SkipDownload`.
