@@ -67,8 +67,35 @@ PREVIEW_SCRIPT = GUI_DIR / "preview.ps1"
 SIXELS_DIR = FF_DIR / "sixels"
 # Block-art logos for terminals that cannot display an image protocol at all.
 ARTS_DIR = FF_DIR / "arts"
+# Where setup.ps1 puts fastfetch. The app only needs it to measure the longest
+# rendered row (see measure_content_width) - everything else defers to the
+# launcher, which resolves the executable at run time.
+FF_EXE = USER / ".local" / "bin" / "fastfetch.exe"
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+
+# --------------------------------------------------------------------------- frame
+#
+# The module frame is a literal run of horizontal rule, so its width is baked
+# into every theme. Two ways to get it wrong, and both are visible: a frame
+# narrower than the longest rendered row leaves that row hanging outside the
+# border, and a frame wider than the window wraps - which lands the border on the
+# next row and pulls the whole fetch apart. So the width is measured from the
+# machine's own output at Apply time (measure_content_width) and clamped to a
+# range a terminal can actually show.
+BOX_WIDTH = 44          # fallback when fastfetch cannot be asked
+BOX_WIDTH_MIN = 40
+BOX_WIDTH_MAX = 64
+# fastfetch puts this many blank columns after the logo before the text starts
+# (its `logo.padding.right`, default 4). Measured, not assumed: a 28-column
+# sixel puts the frame's corner at column 29, and a 24-column one at column 25.
+# The logo is drawn *beside* the frame, so the room left for it is
+# window - frame - 1 - this. Forgetting it is what clipped the frame's last
+# three columns beside the logo even though the arithmetic "fitted".
+LOGO_GAP = 4
+BORDER_CHARS = set("\u2500\u2501\u2550-\u250c\u2510\u2514\u2518\u2554\u2557\u255a\u255d"
+                   "\u250f\u2513\u2517\u251b+ ")
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 DEFAULT_STATE = {
     "gallery": [],          # [{path, w, h}]
@@ -92,6 +119,9 @@ DEFAULT_STATE = {
     "frequency": "every",
     "logWidth": 28,
     "logHeight": 24,
+    # Inner width of the module frame. Rewritten on every Apply from the widest
+    # row this machine actually renders - see measure_content_width.
+    "boxWidth": BOX_WIDTH,
     # How the launcher draws the logo: "auto" trusts its terminal detection,
     # "image" forces the picture even in a terminal it does not recognise,
     # "builtin" always uses fastfetch's tinted ASCII logo.
@@ -237,16 +267,73 @@ def hex_to_sgr(hex_color: str) -> str:
     return ";".join(str(int(h[i:i + 2], 16)) for i in (0, 2, 4))
 
 
+def box_width(st: dict) -> int:
+    """Inner width of the frame, clamped to something a terminal can show."""
+    try:
+        w = int(st.get("boxWidth", BOX_WIDTH))
+    except (TypeError, ValueError):
+        w = BOX_WIDTH
+    return max(BOX_WIDTH_MIN, min(BOX_WIDTH_MAX, w))
+
+
+def frame_width(st: dict) -> int:
+    """Columns the whole frame occupies: the inner width plus both corners."""
+    return box_width(st) + 2
+
+
 def box_lines(st: dict) -> tuple[str, str]:
     style = BOX_STYLES.get(st.get("boxStyle", "rounded"), BOX_STYLES["rounded"])
     if style is None:
         return ("", "")
     tl, hz, tr, vt, bl, br = style
-    top = tl + hz * BOX_WIDTH + tr
-    bot = bl + hz * BOX_WIDTH + br
+    inner = box_width(st)
+    top = tl + hz * inner + tr
+    bot = bl + hz * inner + br
     prefix = f"\x1b[38;2;{hex_to_sgr(st['boxColor'])}m" if st.get("boxColor") else ""
     suffix = "\x1b[0m" if prefix else ""
     return (f"{prefix}{top}{suffix}", f"{prefix}{bot}{suffix}")
+
+
+def measure_content_width(st: dict) -> int:
+    """Longest rendered module row, in columns (0 when it cannot be measured).
+
+    The frame has to be at least this wide, or the longest row hangs outside the
+    border. fastfetch is asked for the base config with `--logo none` so the row
+    widths are module text alone, and `--pipe` so it prints without needing a
+    terminal. Rows that are nothing but border are skipped on purpose: the frame
+    must not be measured against itself, or it would grow a column every Apply.
+    """
+    if not FF_EXE.exists() or not CONFIG_PATH.exists():
+        return 0
+    try:
+        proc = subprocess.run(
+            [str(FF_EXE), "--config", str(CONFIG_PATH), "--logo", "none", "--pipe"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception:
+        return 0
+    widest = 0
+    for line in (proc.stdout or "").splitlines():
+        plain = ANSI_RE.sub("", line).rstrip()
+        stripped = plain.strip()
+        if not stripped or all(ch in BORDER_CHARS for ch in stripped):
+            continue
+        widest = max(widest, len(plain))
+    return widest
+
+
+def fitted_box_width(st: dict) -> int:
+    """Frame width that contains the rendered rows, never narrower than the default.
+
+    Only ever grows: a machine whose module rows are wide (a long GPU name, say)
+    needs a wider frame to contain them, but there is no reason to draw a frame
+    narrower than the design width just because this machine's rows are short -
+    and shrinking it would make the fetch jump around between machines.
+    """
+    measured = measure_content_width(st)
+    if measured <= 0:
+        return box_width(st)
+    return max(BOX_WIDTH, min(BOX_WIDTH_MAX, measured + 2))
 
 
 def build_config_json(st: dict, accent: str) -> dict:
@@ -257,7 +344,11 @@ def build_config_json(st: dict, accent: str) -> dict:
     if top:
         mods.append({"type": "custom", "format": top})
     mods += [
-        {"type": "chassis", "key": "Chassis", "format": "{1} {2} {3}",
+        # {2} {3} is vendor + model. {1} is the chassis type ("Convertible",
+        # "Notebook"), which the model name usually already states - and it was
+        # the longest row in the fetch (53 columns), so the frame had to be
+        # wider than most windows to contain it.
+        {"type": "chassis", "key": "Chassis", "format": "{2} {3}",
          "keyColor": st["groups"]["os"]},
         {"type": "os", "key": "OS", "format": "{2}", "keyColor": st["groups"]["os"]},
         {"type": "kernel", "key": "Kernel", "format": "{2}", "keyColor": st["groups"]["os"]},
@@ -279,9 +370,16 @@ def build_config_json(st: dict, accent: str) -> dict:
     if top:
         mods.append({"type": "custom", "format": top})
     mods += [
-        {"type": "cpu", "format": "{1} @ {7}", "key": "CPU",
+        # {1} alone. "{1} @ {7}" (the boost clock) made this the widest row in
+        # the fetch - wider than the frame - and a row wider than the frame has
+        # to come out of the room the logo gets. The frame is a fixed rule and
+        # the logo is drawn beside it, so the narrower the rows, the more of the
+        # picture survives on a small screen.
+        {"type": "cpu", "format": "{1}", "key": "CPU",
          "keyColor": st["groups"]["cpu"]},
-        {"type": "gpu", "format": "{1} {2}", "key": "GPU",
+        # {2} alone: {1} is the vendor, which the device name already starts
+        # with, so "{1} {2}" printed "Intel Intel(R) Arc(TM) ...".
+        {"type": "gpu", "format": "{2}", "key": "GPU",
          "keyColor": st["groups"]["cpu"]},
         {"type": "gpu", "format": "{3}", "key": "GPU Driver",
          "keyColor": st["groups"]["drv"]},
@@ -490,6 +588,23 @@ function Test-WindowsTerminalHost {
     return $false
 }
 
+function Get-TextLogoWidth {
+    # How many columns a text logo file takes on screen, ANSI colours excluded.
+    # fastfetch prints such a file verbatim - --logo-width has no effect on it -
+    # so measuring the file is the only way to know whether it fits beside the
+    # frame before it is drawn.
+    param([string]$Path)
+    $widest = 0
+    try {
+        foreach ($line in [IO.File]::ReadAllLines($Path)) {
+            $plain = [Text.RegularExpressions.Regex]::Replace($line, '\x1b\[[0-9;]*m', '')
+            $plain = $plain.TrimEnd()
+            if ($plain.Length -gt $widest) { $widest = $plain.Length }
+        }
+    } catch { }
+    return $widest
+}
+
 # --- can this terminal draw an image, and how? ------------------------------
 # Sending image bytes to a terminal that cannot render them prints garbage, so
 # capability is detected rather than assumed. Getting this list wrong is what
@@ -544,9 +659,41 @@ if ($ffLogoMode -eq 'builtin') {
     if (-not $ffSixel -and -not $ffKitty) { $ffSixel = $true; $ffKitty = $true }
 }
 
+# --- fit the fetch to this window ------------------------------------------
+# The logo is drawn beside a frame that is a fixed number of columns wide, so
+# the two together are wider than most windows. fastfetch does not know the
+# frame is there: when the terminal is narrower than the pair it wraps the line,
+# the frame's border lands on the next row and the whole fetch falls apart -
+# which is what a small screen or a tiled window looked like. Give the logo only
+# what is left after the frame, and scale it with the space, so the fetch fits
+# whatever window it lands in.
+#
+# @@LOGOGAP@@ of those columns are fastfetch's own logo padding, which sits
+# between the logo and the text and is easy to forget: without reserving it the
+# pair "fits" on paper while the frame's right corner is still pushed three
+# columns off the edge.
+$ffCols = 0
+try { $ffCols = [Console]::WindowWidth } catch { }
+if ($ffCols -le 0) { try { $ffCols = $Host.UI.RawUI.WindowSize.Width } catch { } }
+if ($ffCols -le 0) { $ffCols = 80 }
+$ffRoom = $ffCols - @@BOX@@ - 1 - @@LOGOGAP@@
+if ($w -gt $ffRoom) {
+    if ($ffRoom -lt 10) {
+        $w = 0      # narrower than this is a smudge, not a logo - draw none
+    } else {
+        $h = [int][Math]::Round($h * $ffRoom / [double]$w)
+        if ($h -lt 4) { $h = 4 }
+        $w = $ffRoom
+    }
+}
+
 # The .sixel files are pre-encoded by FastFetch Studio (this fastfetch build
 # cannot encode PNG to sixel itself); fastfetch passes the bytes through.
-if ($wantImage -and $ffSixel -and $sixels.Count -gt 0) {
+if ($w -le 0) {
+    # No room for a picture beside the frame. Drawing one anyway is exactly what
+    # wrapped the fetch over itself, so draw the frame on its own.
+    $logoArg = @('--logo', 'none')
+} elseif ($wantImage -and $ffSixel -and $sixels.Count -gt 0) {
     $six = $null
     if (-not $randLogo) {
         # Random logo OFF: always the chosen default image - never a random substitution.
@@ -581,18 +728,32 @@ if ($wantImage -and $ffSixel -and $sixels.Count -gt 0) {
 $colorArgs = @()
 if ($accent) { $colorArgs = @('--logo-color-1', $accent, '--logo-color-2', $accent) }
 
+# fastfetch cannot know a frame is drawn beside the text, so a row longer than
+# the window wraps and the frame's border lands on the next line. Refusing to
+# wrap keeps every row on its own line: an over-long value is clipped at the edge
+# instead of pulling the fetch apart. Without this, a window narrower than
+# logo + frame wrapped every border and every long value.
+$fitArgs = @('--disable-linewrap', 'true')
+
 # Run fastfetch exactly ONCE. The previous version called it twice whenever no
 # image protocol was available (classic conhost), and again whenever the first
 # call returned a non-zero exit code - so the fetch was printed twice.
 if ($logoArg.Count -gt 0) {
-    & $ffExe @themeArg @logoArg
+    & $ffExe @themeArg @logoArg @fitArgs
     # $LASTEXITCODE is $null when the call never reached a native command (the
     # exe vanished between the Test-Path above and this line, say). "$null -ne 0"
     # is TRUE, so a bare comparison here fired the fallback and drew twice.
     $ffRc = $LASTEXITCODE
     if ($null -ne $ffRc -and $ffRc -ne 0) {
         # Image attempt failed - retry once with the built-in tinted logo.
-        & $ffExe @themeArg --logo 'Windows11' @colorArgs
+        & $ffExe @themeArg --logo 'Windows11' @colorArgs @fitArgs
+    }
+    # Say why the picture is missing - but only when one was clearly expected (a
+    # pinned image with randomisation off), the same condition the fallback note
+    # below uses. Otherwise every narrow window would print this.
+    if ($w -le 0 -and $wantImage -and -not $randLogo -and $defaultImg) {
+        Write-Host ('FastFetch Studio: a ' + $ffCols + '-column window leaves no room for the logo beside the frame, so the frame was drawn on its own.') -ForegroundColor DarkGray
+        Write-Host '  widen the window to bring the picture back.' -ForegroundColor DarkGray
     }
 } else {
     # No image protocol here. fastfetch prints a *text* logo file verbatim, ANSI
@@ -614,15 +775,29 @@ if ($logoArg.Count -gt 0) {
         } else {
             $art = Get-Random -InputObject $arts
         }
-        if ($art) { $fbLogo = $art.FullName }
+        if ($art) {
+            # --logo-width does nothing to a text logo - fastfetch prints the file
+            # as it is - so unlike a sixel the art cannot be scaled down to the
+            # room the frame leaves. Draw it only when it fits, and when it does
+            # not draw nothing rather than fall back to a *wider* logo: the
+            # built-in ASCII one is 40 columns and would be worse.
+            if ((Get-TextLogoWidth -Path $art.FullName) -le $ffRoom) {
+                $fbLogo = $art.FullName
+            } else {
+                $fbLogo = 'none'
+            }
+        }
     }
-    & $ffExe @themeArg --logo $fbLogo @colorArgs
+    & $ffExe @themeArg --logo $fbLogo @colorArgs @fitArgs
+    if ($fbLogo -eq 'none' -and $wantImage -and -not $randLogo -and $defaultImg) {
+        Write-Host ('FastFetch Studio: a ' + $ffCols + '-column window is too narrow for the logo beside the frame, so the frame was drawn on its own.') -ForegroundColor DarkGray
+        Write-Host '  widen the window to bring the picture back.' -ForegroundColor DarkGray
     # Say why - but only when a picture was clearly expected (a pinned default
     # image, randomisation off) and the block art could not be used either.
     # Otherwise every shell that cannot draw images would print this, which is
     # noise. This is the message whose absence made "I set a logo and got a
     # Windows logo" look like a broken app.
-    if ($fbLogo -eq 'Windows11' -and $wantImage -and -not $randLogo -and $defaultImg) {
+    } elseif ($fbLogo -eq 'Windows11' -and $wantImage -and -not $randLogo -and $defaultImg) {
         Write-Host ('FastFetch Studio: no image support detected in ' + $ffHost + ', so the built-in logo was drawn.') -ForegroundColor DarkGray
         Write-Host '  force it: $env:FASTFETCH_STUDIO_LOGO = ''image''   (Windows Terminal 1.22+ draws it as-is)' -ForegroundColor DarkGray
     }
@@ -648,7 +823,9 @@ def generate_launcher(st: dict) -> None:
     # toggle, which can be the first thing that ever writes into ~\.config\fastfetch.
     LAUNCHER_PATH.parent.mkdir(parents=True, exist_ok=True)
     text = LAUNCHER_TEMPLATE.replace("@@W@@", str(int(st.get("logWidth", 28)))) \
-                            .replace("@@H@@", str(int(st.get("logHeight", 24))))
+                            .replace("@@H@@", str(int(st.get("logHeight", 24)))) \
+                            .replace("@@BOX@@", str(frame_width(st))) \
+                            .replace("@@LOGOGAP@@", str(LOGO_GAP))
     LAUNCHER_PATH.write_text(text, "utf-8", newline="\n")
 
 
@@ -687,6 +864,14 @@ def apply_all(st: dict) -> str:
     if CONFIG_PATH.exists() and not BACKUP_PATH.exists():
         shutil.copyfile(CONFIG_PATH, BACKUP_PATH)
     write_config(st)
+    # The frame must be at least as wide as the widest row this machine renders,
+    # and only fastfetch knows that. Measure against the config just written,
+    # then rewrite it if the frame has to change - one extra write on the run
+    # that changes it, and none on the runs after that.
+    fitted = fitted_box_width(st)
+    if fitted != box_width(st):
+        st["boxWidth"] = fitted
+        write_config(st)
     sixels = ensure_sixels(st)
     arts = ensure_arts(st)
     themes = generate_theme_files(st)
@@ -810,8 +995,8 @@ $env:WT_SESSION = 'set-by-wt'
 # The window is left exactly as Windows Terminal opened it. Do not resize it:
 # SetWindowSize() works, but Windows Terminal persists the size of the last
 # window it closed, so widening the preview silently rewrites the width of every
-# terminal the user opens afterwards. A narrow window wrapping the fetch over the
-# logo is a smaller price than that. See the guard in the CI preview step.
+# terminal the user opens afterwards. The logo is sized to the window instead.
+# See the guard in the CI preview step.
 $ffExe = Join-Path $env:USERPROFILE '.local\bin\fastfetch.exe'
 if (-not (Test-Path -LiteralPath $ffExe)) { $ffExe = 'fastfetch.exe' }
 if (-not (Get-Command -Name $ffExe -ErrorAction SilentlyContinue)) {
@@ -823,14 +1008,78 @@ $themeArg = @('--config', '@@THEME@@')
 $sixel = '@@SIXEL@@'
 $art   = '@@ART@@'
 
-if (-not $BlockArt -and (Test-Path -LiteralPath $sixel)) {
-    & $ffExe @themeArg --logo-type raw --logo $sixel --logo-width @@W@@ --logo-height @@H@@
-} elseif (Test-Path -LiteralPath $art) {
+function Get-TextLogoWidth {
+    # How many columns a text logo file takes on screen, ANSI colours excluded.
+    # fastfetch prints such a file verbatim - --logo-width has no effect on it -
+    # so measuring the file is the only way to know whether it fits beside the
+    # frame before it is drawn.
+    param([string]$Path)
+    $widest = 0
+    try {
+        foreach ($line in [IO.File]::ReadAllLines($Path)) {
+            $plain = [Text.RegularExpressions.Regex]::Replace($line, '\x1b\[[0-9;]*m', '')
+            $plain = $plain.TrimEnd()
+            if ($plain.Length -gt $widest) { $widest = $plain.Length }
+        }
+    } catch { }
+    return $widest
+}
+
+# The logo is drawn beside a frame that is a fixed number of columns wide, so the
+# pair is wider than most windows and fastfetch wraps whatever does not fit -
+# landing the frame's border on the next row. Give the logo only what is left
+# after the frame, and scale it with the space so the preview shows the layout
+# the shell will actually get.
+#
+# @@LOGOGAP@@ of those columns are fastfetch's own logo padding, which sits
+# between the logo and the text: without reserving it the pair "fits" on paper
+# while the frame's right corner is still pushed off the edge.
+$ffCols = 0
+try { $ffCols = [Console]::WindowWidth } catch { }
+if ($ffCols -le 0) { try { $ffCols = $Host.UI.RawUI.WindowSize.Width } catch { } }
+if ($ffCols -le 0) { $ffCols = 80 }
+$w = @@W@@
+$h = @@H@@
+$ffRoom = $ffCols - @@BOX@@ - 1 - @@LOGOGAP@@
+if ($w -gt $ffRoom) {
+    if ($ffRoom -lt 10) {
+        $w = 0      # narrower than this is a smudge, not a logo - draw none
+    } else {
+        $h = [int][Math]::Round($h * $ffRoom / [double]$w)
+        if ($h -lt 4) { $h = 4 }
+        $w = $ffRoom
+    }
+}
+
+# Refusing to wrap keeps every row on its own line: an over-long value is clipped
+# at the edge instead of taking the frame's border with it.
+$fitArgs = @('--disable-linewrap', 'true')
+
+# A text logo cannot be scaled - --logo-width does nothing to a file - so the
+# only way to keep the frame intact is to draw it only when it fits, and to draw
+# nothing when it does not rather than fall back to a wider logo.
+$artW = 0
+if (Test-Path -LiteralPath $art) { $artW = Get-TextLogoWidth -Path $art }
+$artFits = $artW -gt 0 -and $artW -le $ffRoom
+
+if ($w -le 0) {
+    & $ffExe @themeArg --logo none @fitArgs
+    Write-Host ''
+    Write-Host ('FastFetch Studio: a ' + $ffCols + '-column window leaves no room for the logo beside the frame. Widen the window and press Preview again.') -ForegroundColor DarkGray
+} elseif (-not $BlockArt -and (Test-Path -LiteralPath $sixel)) {
+    & $ffExe @themeArg --logo-type raw --logo $sixel --logo-width $w --logo-height $h @fitArgs
+} elseif ($artFits) {
     # No image protocol to draw into - a bare console, say. fastfetch prints a
     # *text* logo file verbatim, so the block art still shows the user's picture.
-    & $ffExe @themeArg --logo $art
+    & $ffExe @themeArg --logo $art @fitArgs
+} elseif (Test-Path -LiteralPath $art) {
+    # The art is there but wider than the room the frame leaves. Drawing it
+    # anyway is what pushed the frame off the edge.
+    & $ffExe @themeArg --logo none @fitArgs
+    Write-Host ''
+    Write-Host ('FastFetch Studio: a ' + $ffCols + '-column window is too narrow for the logo beside the frame. Widen the window and press Preview again.') -ForegroundColor DarkGray
 } else {
-    & $ffExe @themeArg --logo Windows11
+    & $ffExe @themeArg --logo Windows11 @fitArgs
 }
 
 Write-Host ''
@@ -853,7 +1102,9 @@ def write_preview_script(st: dict, image_path: str) -> Path | None:
             .replace("@@SIXEL@@", str(PREVIEW_CACHE))
             .replace("@@ART@@", str(ARTS_DIR / f"{art_key(image_path)}.art"))
             .replace("@@W@@", str(int(st.get("logWidth", 28))))
-            .replace("@@H@@", str(int(st.get("logHeight", 24)))))
+            .replace("@@H@@", str(int(st.get("logHeight", 24))))
+            .replace("@@BOX@@", str(frame_width(st)))
+            .replace("@@LOGOGAP@@", str(LOGO_GAP)))
     PREVIEW_SCRIPT.parent.mkdir(parents=True, exist_ok=True)
     PREVIEW_SCRIPT.write_text(body, "utf-8", newline="\n")
     return PREVIEW_SCRIPT

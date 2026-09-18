@@ -211,11 +211,11 @@ jobs:
           # final branch is shared by art and builtin, so it logs the leaf name.
           $probe = Join-Path $env:TEMP 'logo-probe.ps1'
           $src = Get-Content -LiteralPath $launcher -Raw
-          $src = $src.Replace('& $ffExe @themeArg @logoArg',
+          $src = $src.Replace('& $ffExe @themeArg @logoArg @fitArgs',
                               "Add-Content -LiteralPath `$env:FF_LOG -Value 'image'")
-          $src = $src.Replace("& `$ffExe @themeArg --logo 'Windows11' @colorArgs",
+          $src = $src.Replace("& `$ffExe @themeArg --logo 'Windows11' @colorArgs @fitArgs",
                               "Add-Content -LiteralPath `$env:FF_LOG -Value 'builtin'")
-          $src = $src.Replace('& $ffExe @themeArg --logo $fbLogo @colorArgs',
+          $src = $src.Replace('& $ffExe @themeArg --logo $fbLogo @colorArgs @fitArgs',
                               "Add-Content -LiteralPath `$env:FF_LOG -Value ('fallback=' + (Split-Path -Leaf `$fbLogo))")
           Set-Content -LiteralPath $probe -Value $src
 
@@ -251,6 +251,28 @@ jobs:
             $got = Get-Branch $c.over
             Write-Host ("  {0,-28} -> {1}" -f $c.name, $got)
             if ($got -ne $c.want) { throw "logo mode '$($c.name)' drew '$got', expected '$($c.want)'" }
+          }
+
+          # A block art logo is a text file that fastfetch prints verbatim, so
+          # --logo-width cannot shrink it the way it shrinks a sixel. An art
+          # wider than the room the frame leaves is dropped rather than allowed
+          # to push the frame's corner off the window. Both sides pinned at the
+          # same forced width, so this does not depend on the runner's console.
+          $artProbe = Join-Path $env:TEMP 'logo-probe-art.ps1'
+          $artBase = $src.Replace('$ffCols = [Console]::WindowWidth', '$ffCols = 80')
+          $artFile = Join-Path $root 'arts\demo.art'
+          Set-Content -LiteralPath $artFile -Value ('x' * 40) -NoNewline
+          Set-Content -LiteralPath $artProbe -Value $artBase
+          $overWide = Get-Branch @{} $artProbe
+          Write-Host ("  {0,-28} -> {1}" -f 'art wider than the room', $overWide)
+          if ($overWide -ne 'fallback=none') {
+            throw "an over-wide block art drew '$overWide', expected the frame alone"
+          }
+          Set-Content -LiteralPath $artFile -Value 'art' -NoNewline
+          $artFits = Get-Branch @{} $artProbe
+          Write-Host ("  {0,-28} -> {1}" -f 'art that fits', $artFits)
+          if ($artFits -ne 'fallback=demo.art') {
+            throw "a block art that fits drew '$artFits', expected the art"
           }
 
           # With no block art to fall back on, fastfetch's ASCII logo is the last
@@ -293,6 +315,56 @@ jobs:
             throw 'the process-tree check must sit between the named terminals and the generic TERM_PROGRAM fallback'
           }
           Write-Host 'host detection ok (process tree consulted, but only after the named terminals)'
+
+          # --- the fetch has to fit the window it lands in --------------------
+          # The logo is drawn beside a fixed-width frame, so the pair is wider
+          # than most windows - and fastfetch does not know the frame is there.
+          # A narrower window used to wrap the fetch over itself: the frame's
+          # border on the next row, long values split in half, the logo
+          # overlapped. The launcher now gives the logo only what is left after
+          # the frame, and refuses to let fastfetch wrap at all.
+          $calls = @($body -split "`n" | Where-Object { $_ -match '^\s*& \$ffExe' })
+          if ($calls.Count -lt 3) { throw "expected 3 fastfetch invocations in the launcher, found $($calls.Count)" }
+          foreach ($line in $calls) {
+            if ($line -notmatch '@fitArgs') { throw "an invocation does not refuse line wrapping: $line" }
+          }
+          if ($body -notmatch "'--logo', 'none'") {
+            throw 'the launcher cannot drop the logo when the window is too narrow for it'
+          }
+
+          # Pin the arithmetic. The frame is 46 columns (BOX_WIDTH 44 plus two
+          # corners), the configured logo is 28x24, and the logo gets whatever
+          # is left: cols - 46 - 1 - 4. The 4 is fastfetch's own logo padding,
+          # which sits between the logo and the text; without reserving it the
+          # pair "fits" on paper while the frame's corner is still pushed three
+          # columns off the edge - measured in a real 71-column window.
+          $fitProbe = Join-Path $env:TEMP 'logo-probe-fit.ps1'
+          $fitBase = $body.Replace('& $ffExe @themeArg @logoArg @fitArgs',
+                                   "Add-Content -LiteralPath `$env:FF_LOG -Value ('w=' + `$w + ' h=' + `$h)")
+          $fitBase = $fitBase.Replace("& `$ffExe @themeArg --logo 'Windows11' @colorArgs @fitArgs",
+                                      "Add-Content -LiteralPath `$env:FF_LOG -Value 'builtin'")
+          $fitBase = $fitBase.Replace('& $ffExe @themeArg --logo $fbLogo @colorArgs @fitArgs',
+                                      "Add-Content -LiteralPath `$env:FF_LOG -Value 'fallback'")
+          if ($fitBase -match '& \$ffExe') { throw 'a launcher invocation was not swapped out for the fit probe' }
+
+          $fitCases = @(
+            @{ cols = 120; want = 'w=28 h=24' },   # room 69 - the logo fits as configured
+            @{ cols =  80; want = 'w=28 h=24' },   # room 29
+            @{ cols =  75; want = 'w=24 h=21' },   # room 24 - scaled, aspect kept
+            @{ cols =  74; want = 'w=23 h=20' },
+            @{ cols =  64; want = 'w=13 h=11' },
+            @{ cols =  61; want = 'w=10 h=9' },    # room 10 - the floor
+            @{ cols =  60; want = 'w=0 h=24' }     # room 9 - too narrow, no logo
+          )
+          foreach ($c in $fitCases) {
+            Set-Content -LiteralPath $fitProbe -Value `
+              $fitBase.Replace('$ffCols = [Console]::WindowWidth', ('$ffCols = ' + $c.cols))
+            # WT_SESSION so the sixel branch runs: that is the one that sizes the logo.
+            $got = Get-Branch @{ WT_SESSION = 'ci' } $fitProbe
+            Write-Host ("  window {0,3} cols         -> {1}" -f $c.cols, $got)
+            if ($got -ne $c.want) { throw "a $($c.cols)-column window drew '$got', expected '$($c.want)'" }
+          }
+          Write-Host 'window fitting ok (logo scaled to the room the frame leaves; wrapping refused)'
 
           # With no art and no image support, the fallback has to say where it
           # happened and how to override it - that silence is what made
@@ -363,13 +435,22 @@ jobs:
           $log = Join-Path $env:TEMP 'preview-log.txt'
           $src = Get-Content -LiteralPath $script -Raw
           $src = $src.Replace(
-            '& $ffExe @themeArg --logo-type raw --logo $sixel --logo-width 28 --logo-height 24',
+            '& $ffExe @themeArg --logo-type raw --logo $sixel --logo-width $w --logo-height $h @fitArgs',
             "Add-Content -LiteralPath `$env:FF_LOG -Value 'sixel'")
-          $src = $src.Replace('& $ffExe @themeArg --logo $art',
+          $src = $src.Replace('& $ffExe @themeArg --logo $art @fitArgs',
                               "Add-Content -LiteralPath `$env:FF_LOG -Value 'art'")
-          $src = $src.Replace('& $ffExe @themeArg --logo Windows11',
+          $src = $src.Replace('& $ffExe @themeArg --logo Windows11 @fitArgs',
                               "Add-Content -LiteralPath `$env:FF_LOG -Value 'builtin'")
+          $src = $src.Replace('& $ffExe @themeArg --logo none @fitArgs',
+                              "Add-Content -LiteralPath `$env:FF_LOG -Value 'none'")
           if ($src -match '& \$ffExe') { throw 'a preview invocation was not swapped out for the probe' }
+
+          # Every invocation has to refuse line wrapping: fastfetch cannot know a
+          # frame is drawn beside the text, so a row longer than the window wraps
+          # and takes the frame's border with it.
+          foreach ($line in @($body -split "`n" | Where-Object { $_ -match '^\s*& \$ffExe' })) {
+            if ($line -notmatch '@fitArgs') { throw "a preview invocation does not refuse wrapping: $line" }
+          }
           Set-Content -LiteralPath $probe -Value $src
 
           # fastfetch is not installed on the runner, so the script would bail out
@@ -384,7 +465,7 @@ jobs:
           New-Item -ItemType Directory -Path $arts -Force | Out-Null
           Set-Content -LiteralPath (Join-Path $arts 'img.art') -Value 'art' -NoNewline
 
-          function Get-PreviewBranch([switch]$BlockArt) {
+          function Get-PreviewBranch([switch]$BlockArt, [string]$Script = $probe) {
             $env:FF_LOG = $log
             Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
             # Splat, don't pass a string: PowerShell does not re-read a variable's
@@ -392,7 +473,7 @@ jobs:
             # the switch and every case would look like the default branch.
             $p = @{}
             if ($BlockArt) { $p['BlockArt'] = $true }
-            & $probe @p *>&1 | Out-Null
+            & $Script @p *>&1 | Out-Null
             if (Test-Path -LiteralPath $log) { return (Get-Content -LiteralPath $log) -join ',' }
             return 'none'
           }
@@ -415,12 +496,42 @@ jobs:
           Write-Host "  -BlockArt               -> $forced"
           if ($forced -ne 'art') { throw "-BlockArt drew '$forced', expected 'art'" }
 
+          # A text logo cannot be scaled by --logo-width, so an art wider than the
+          # room the frame leaves has to be dropped: drawing it pushes the frame
+          # off the edge. Pinned by forcing the room and using an over-wide art,
+          # rather than by guessing the runner's window width.
+          $wideArtProbe = Join-Path $env:TEMP 'preview-probe-wide.ps1'
+          $artFile = Join-Path $arts 'img.art'
+          Set-Content -LiteralPath $artFile -Value ('x' * 40) -NoNewline
+          Set-Content -LiteralPath $wideArtProbe -Value `
+            $src.Replace('$ffRoom = $ffCols -', '$ffRoom = 61 -')
+          $overWide = Get-PreviewBranch -BlockArt -Script $wideArtProbe
+          Write-Host "  art wider than the room -> $overWide"
+          if ($overWide -ne 'none') {
+            throw "an over-wide block art drew '$overWide', expected the frame alone"
+          }
+          Set-Content -LiteralPath $artFile -Value 'art' -NoNewline
+
           # Nothing to draw with at all: fastfetch's own ASCII logo.
           Remove-Item -LiteralPath $arts -Recurse -Force
           Remove-Item -LiteralPath $sixel -Force
           $bare = Get-PreviewBranch
           Write-Host "  no sixel, no art        -> $bare"
           if ($bare -ne 'builtin') { throw "preview drew '$bare' with nothing to draw, expected 'builtin'" }
+
+          # A window too narrow for the logo beside the frame: the logo has to go,
+          # and the frame is drawn alone. Drawing the picture anyway is exactly
+          # what wrapped the preview over itself. Pinned by forcing the leftover
+          # room negative rather than by guessing the runner's window width.
+          $narrow = Join-Path $env:TEMP 'preview-probe-narrow.ps1'
+          Set-Content -LiteralPath $sixel -Value 'x' -NoNewline
+          Set-Content -LiteralPath $narrow -Value `
+            $src.Replace('$ffRoom = $ffCols -', '$ffRoom = 0 -')
+          $tight = Get-PreviewBranch -Script $narrow
+          Write-Host "  window too narrow       -> $tight"
+          if ($tight -ne 'none') {
+            throw "a window too narrow for the logo drew '$tight', expected the frame alone"
+          }
 
           # The preview must leave the window the size Windows Terminal opened it
           # at. Resizing the console host does work, but Windows Terminal

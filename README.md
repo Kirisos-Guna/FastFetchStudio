@@ -138,6 +138,48 @@ Terminal tab keeps `WindowsTerminal.exe` in its process tree while its own termi
 draw sixel. A console Windows Terminal merely *hosts* has no `WindowsTerminal.exe` above it, so
 it keeps the block art — the same verdict fastfetch reaches when it calls that terminal `dumb`.
 
+### The fetch wraps and breaks in a narrow window (a tiled pane, a small screen)
+
+Split the terminal into four panes, or work in a window narrower than usual, and the fetch falls
+apart: the frame's border lands on the *next* row, a long value is split mid-word, and the logo is
+cut off by the pane edge.
+
+The logo is drawn **beside** a frame that is a fixed number of columns wide, and fastfetch does not
+know the frame is there. At the default settings the pair needs `28 + 4 + 46 = 78` columns, so a
+63-column pane has nowhere to put it and fastfetch wraps whatever does not fit — which takes the
+border with it. Three things fix that:
+
+- **fastfetch is told not to wrap** (`--disable-linewrap true`). An over-long row is clipped at the
+  window edge instead of pushing the frame onto the next line. Every row stays on its own line.
+- **The logo is scaled to the room the frame leaves** — `window − frame − 1 − 4`, aspect ratio
+  kept. The `4` is fastfetch's own logo padding, which sits between the picture and the text; it is
+  easy to forget and, without it, the frame's last three columns are still pushed off the edge.
+  Below 10 columns there is no room for a picture at all, so the frame is drawn on its own and a
+  one-line note says why.
+- **The frame is measured against this machine's own rows** when you press *Apply & Generate*, and
+  widened if the longest row would hang outside it (clamped to 40–64). A machine with a longer GPU
+  name therefore gets a frame that contains it, rather than a row that spills past the border.
+
+The block-art fallback cannot be scaled — fastfetch prints a text logo file verbatim, so
+`--logo-width` does nothing to it — so the art is drawn only when it fits beside the frame.
+
+The CPU row is deliberately the model name alone (`Intel(R) Core(TM) Ultra 7 258V`, not
+`… @ 4.80 GHz`). The boost clock made it the widest row in the fetch, and every column the rows
+take is a column the picture does not get.
+
+Measured in real Windows Terminal windows, running the installed launcher, with the frame's own
+characters counted back out of the console screen buffer:
+
+| window | logo | frame rule | logo + frame |
+| --- | --- | --- | --- |
+| 69 columns | 22 columns | 46, complete | 68 — fits |
+| 61 columns | 14 columns | 46, complete | 60 — fits |
+| 53 columns | dropped | 46, complete | 46 — fits |
+| 61 columns, logo off | — | 46, complete | 46 — fits |
+
+A window narrower than the frame itself (46 columns) will still clip the frame's right corner:
+the frame is a fixed rule baked into the themes, and there is nothing left to give.
+
 ### The fetch prints twice, in two different colours
 
 Your `$PROFILE` has two fastfetch calls in it — most often `setup.ps1`'s managed block *plus*
