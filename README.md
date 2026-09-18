@@ -37,8 +37,9 @@ options, verification, and uninstall.
 - **Random tab** — choose what randomizes per terminal open (logo, theme), how often
   (every window or once per day), and how the logo is drawn (auto / always draw the image /
   built-in ASCII only).
-- **Live preview** — renders the logo to a real sixel image and opens a preview in
-  Windows Terminal.
+- **Live preview** — renders the logo to a real sixel image and opens it in a Windows
+  Terminal window, with the same theme and module list the launcher will draw. The window
+  widens itself to fit and stays open until you close it, so the fetch does not flash past.
 - **8 palettes** — your exact colors plus 7 hue-rotated variants are generated so
   randomization has variety.
 - **An icon on every row** — the generated config switches fastfetch's key icons on, so all
@@ -57,6 +58,7 @@ options, verification, and uninstall.
 | `~\.config\fastfetch\fastfetch-random.ps1` | picks a random theme + logo each run, and draws once per shell session. It detects the terminal first — sixel on Windows Terminal (1.22+), WezTerm, foot, contour, mlterm, yaft; the kitty protocol on kitty, WezTerm and Ghostty; block art from `arts\` anywhere else; fastfetch's tinted ASCII logo as the last resort. Written by **Apply & Generate**; `setup.ps1` writes a plain bootstrap here so the profile hook works before the app has ever run |
 | `~\.config\fastfetch\arts\*.art` | your logos pre-rendered as truecolour block art, for terminals that can display no image protocol |
 | `~\.config\fastfetch\gui\studio-state.json` | app state (gallery, colors, settings) |
+| `~\.config\fastfetch\gui\preview.ps1` | the payload the **Preview in terminal** button runs; regenerated on every click |
 
 ## Hook it into PowerShell (one time)
 
@@ -117,6 +119,21 @@ theme, so you get the fetch twice in two colour schemes.
 The launcher now draws **once per shell session**, so a second call is a no-op. To stop it
 being called at all, delete whichever of the two you do not want — `setup.ps1 -Uninstall`
 removes its own block, or delete the pasted lines by hand.
+
+### Preview in terminal fails with `Error 2147942402 (0x80070002)`
+
+Fixed in v1.1.11. The button used to hand Windows Terminal a
+`powershell -Command "$env:WT_SESSION=…; & fastfetch …"` one-liner, and Windows Terminal
+splits its command line on `;` **even inside a quoted argument** — it cut the line in two and
+tried to launch the second half, which began with `&`, as a program:
+
+```
+[error 2147942402 (0x80070002) when launching `" & "$env:USERPROFILE\.local\bin\fastfetch.exe" …`]
+The system cannot find the file specified.
+```
+
+The payload is now a generated file (`gui\preview.ps1`) launched with `-File`, so there is
+nothing on the `wt` command line for that parser to split. Update to v1.1.11 or later.
 
 ### Prerequisite: the execution policy must allow scripts
 

@@ -277,6 +277,127 @@ jobs:
           }
           Write-Host 'logo mode ok (branches pinned; art fallback; fallback explains itself)'
 
+      # "Preview in terminal" used to fail with
+      #   Error 2147942402 (0x80070002) when launching `" & "$env:USERPROFILE\..."`
+      # because the payload was a `powershell -Command "$env:WT_SESSION=..; & ff"`
+      # one-liner, and Windows Terminal splits its command line on ';' even
+      # inside a quoted argument. It cut the line at the ';' and tried to launch
+      # the second half - which began with '&' - as a program. The payload is a
+      # generated file now, so the wt line has nothing to split on.
+      - name: Preview command line has nothing for wt to split
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:USERPROFILE '.config\fastfetch'
+          # write_preview_script refuses to build anything without a theme.
+          $themes = Join-Path $root 'themes'
+          New-Item -ItemType Directory -Path $themes -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $themes 'theme-01.jsonc') -Value '{"modules":[]}'
+          python -c "import app; app.write_preview_script({'logWidth':28,'logHeight':24,'gallery':[]}, '')"
+
+          $script = Join-Path $root 'gui\preview.ps1'
+          if (-not (Test-Path -LiteralPath $script)) { throw 'no preview.ps1 was generated' }
+
+          # The markers let a later run find and replace the file without
+          # disturbing anything a user added around it.
+          $body = Get-Content -LiteralPath $script -Raw
+          if ($body -notmatch '# >>> FastFetch Studio :: preview >>>') { throw 'preview.ps1 has no opening marker' }
+          if ($body -notmatch '# <<< FastFetch Studio :: preview <<<') { throw 'preview.ps1 has no closing marker' }
+
+          $errs = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$null, [ref]$errs)
+          if (@($errs).Count) { throw "preview.ps1 has syntax errors: $($errs[0].Message)" }
+          Write-Host 'preview.ps1 parses cleanly'
+
+          # The invariant. A ';' anywhere on the wt line - including inside an
+          # argument - is exactly what broke the preview.
+          $cmd = @(python -c "import app; print('\n'.join(app.preview_argv(app.PREVIEW_SCRIPT)))")
+          if ($cmd.Count -lt 6) { throw "preview_argv produced no command line: $cmd" }
+          $bad = @($cmd | Where-Object { $_ -like '*;*' })
+          if ($bad.Count) { throw "the preview command line contains a ';': $($bad -join ' | ')" }
+          Write-Host 'preview command line carries no semicolon'
+
+          # -NoExit must precede -File, or PowerShell hands it to the script as an
+          # argument instead of reading it and the window closes on fastfetch's exit.
+          $joined = $cmd -join ' '
+          if ($joined -notmatch '-NoExit\s+-NoProfile\s+-ExecutionPolicy\s+Bypass\s+-File') {
+            throw "-NoExit is not positioned before -File: $joined"
+          }
+          if ($joined -match 'wt\.exe.*-Command') { throw "preview still uses -Command: $joined" }
+          Write-Host '-NoExit sits before -File'
+
+          # Behaviour: swap each invocation for a log write, then check the branch
+          # each way of launching the script actually takes.
+          $probe = Join-Path $env:TEMP 'preview-probe.ps1'
+          $log = Join-Path $env:TEMP 'preview-log.txt'
+          $src = Get-Content -LiteralPath $script -Raw
+          $src = $src.Replace(
+            '& $ffExe @themeArg --logo-type raw --logo $sixel --logo-width 28 --logo-height 24',
+            "Add-Content -LiteralPath `$env:FF_LOG -Value 'sixel'")
+          $src = $src.Replace('& $ffExe @themeArg --logo $art',
+                              "Add-Content -LiteralPath `$env:FF_LOG -Value 'art'")
+          $src = $src.Replace('& $ffExe @themeArg --logo Windows11',
+                              "Add-Content -LiteralPath `$env:FF_LOG -Value 'builtin'")
+          if ($src -match '& \$ffExe') { throw 'a preview invocation was not swapped out for the probe' }
+          Set-Content -LiteralPath $probe -Value $src
+
+          # fastfetch is not installed on the runner, so the script would bail out
+          # before reaching any branch. Point it at a file that exists.
+          $bin = Join-Path $env:USERPROFILE '.local\bin'
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $bin 'fastfetch.exe') -Value '' -NoNewline
+
+          $sixel = Join-Path $root 'gui\preview.sixel'
+          # image_path was '' above, so art_key() gives the fallback name 'img'.
+          $arts = Join-Path $root 'arts'
+          New-Item -ItemType Directory -Path $arts -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $arts 'img.art') -Value 'art' -NoNewline
+
+          function Get-PreviewBranch([switch]$BlockArt) {
+            $env:FF_LOG = $log
+            Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+            # Splat, don't pass a string: PowerShell does not re-read a variable's
+            # value as a parameter name, so "& $probe $extra" would silently drop
+            # the switch and every case would look like the default branch.
+            $p = @{}
+            if ($BlockArt) { $p['BlockArt'] = $true }
+            & $probe @p *>&1 | Out-Null
+            if (Test-Path -LiteralPath $log) { return (Get-Content -LiteralPath $log) -join ',' }
+            return 'none'
+          }
+
+          Set-Content -LiteralPath $sixel -Value 'x' -NoNewline
+          $withSixel = Get-PreviewBranch
+          Write-Host "  sixel present           -> $withSixel"
+          if ($withSixel -ne 'sixel') { throw "preview drew '$withSixel' with a sixel available, expected 'sixel'" }
+
+          # No sixel (Pillow missing, say) must still show the picture as block art.
+          Remove-Item -LiteralPath $sixel -Force
+          $noSixel = Get-PreviewBranch
+          Write-Host "  no sixel, art available -> $noSixel"
+          if ($noSixel -ne 'art') { throw "preview drew '$noSixel' without a sixel, expected 'art'" }
+
+          # -BlockArt is what the no-wt.exe console fallback passes: a bare console
+          # cannot draw sixel, so it must go straight to the art even if one exists.
+          Set-Content -LiteralPath $sixel -Value 'x' -NoNewline
+          $forced = Get-PreviewBranch -BlockArt
+          Write-Host "  -BlockArt               -> $forced"
+          if ($forced -ne 'art') { throw "-BlockArt drew '$forced', expected 'art'" }
+
+          # Nothing to draw with at all: fastfetch's own ASCII logo.
+          Remove-Item -LiteralPath $arts -Recurse -Force
+          Remove-Item -LiteralPath $sixel -Force
+          $bare = Get-PreviewBranch
+          Write-Host "  no sixel, no art        -> $bare"
+          if ($bare -ne 'builtin') { throw "preview drew '$bare' with nothing to draw, expected 'builtin'" }
+
+          # The narrow-window guard: a fresh window opens at the last size Windows
+          # Terminal used (71x41 here), which wrapped every line back over the
+          # picture. Only growth is requested, so a wide window is left alone.
+          if ($body -notmatch '\[Console\]::SetWindowSize') {
+            throw 'preview.ps1 no longer widens the window; the fetch will wrap over the logo'
+          }
+          Write-Host 'preview ok (file payload; branches pinned; window widened)'
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
