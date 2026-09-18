@@ -84,9 +84,14 @@ jobs:
           $inv   = Join-Path $env:TEMP 'launcher-inv.txt'
           $log   = "Add-Content -LiteralPath '$inv' -Value 'run'`n`$global:LASTEXITCODE = [int]`$env:FF_RC"
           $src = Get-Content -LiteralPath $launcher -Raw
-          $src = $src.Replace('& $ffExe @themeArg @logoArg', $log)
-          $src = $src.Replace("& `$ffExe @themeArg --logo 'Windows11' @colorArgs", $log)
-          $src = $src.Replace('& $ffExe @themeArg --logo $fbLogo @colorArgs', $log)
+          $src = $src.Replace('& $ffExe @themeArg @logoArg @fitArgs', $log)
+          $src = $src.Replace("& `$ffExe @themeArg --logo 'Windows11' @colorArgs @fitArgs", $log)
+          $src = $src.Replace('& $ffExe @themeArg --logo $fbLogo @colorArgs @fitArgs', $log)
+          # These swaps match the whole invocation, so adding an argument to the
+          # launcher silently stops the swap from matching - and the leftover
+          # text is a *parse* error in the probe, which then surfaces as some
+          # unrelated assertion failing. Fail here instead.
+          if ($src -match '& \$ffExe') { throw 'a launcher invocation was not swapped out for the probe' }
           Set-Content -LiteralPath $probe -Value $src
 
           function Count-Runs([int]$rc) {
