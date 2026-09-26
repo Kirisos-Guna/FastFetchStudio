@@ -902,17 +902,26 @@ function global:Get-FFSLogoFit {
 }
 
 function global:Get-FFSArtFit {
-    # The same choice for the block-art ladder: a text logo cannot tear, so it is
-    # what a window too narrow or too short for the picture gets. The size is in
-    # the name, written by the encoder from the very cells it rendered.
+    # The same choice for the block art: a text logo cannot tear, so it is what a
+    # window too narrow or too short for the picture gets. The full-size file is
+    # a candidate like any other - it is measured (that is what makes it drawable
+    # at all) and the variants carry their size in the name, written by the
+    # encoder from the very cells it rendered.
     param([string]$Path, [string]$Dir, [int]$Room, [int]$Rows)
     if (-not $Path -or -not $Dir) { return $null }
     $base = [IO.Path]::GetFileNameWithoutExtension($Path)
+    $files = @(Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue)
+    $files += @(Get-ChildItem -LiteralPath $Dir -Filter ($base + '-*x*.art') -File -ErrorAction SilentlyContinue)
     $best = $null
-    foreach ($f in @(Get-ChildItem -LiteralPath $Dir -Filter ($base + '-*x*.art') -File -ErrorAction SilentlyContinue)) {
-        if ($f.BaseName -notmatch '-(\d+)x(\d+)$') { continue }
-        $w = [int]$Matches[1]; $h = [int]$Matches[2]
-        if ($w -gt $Room -or $h -gt $Rows) { continue }
+    foreach ($f in $files) {
+        $w = 0; $h = 0
+        if ($f.BaseName -match '-(\d+)x(\d+)$') {
+            $w = [int]$Matches[1]; $h = [int]$Matches[2]
+        } else {
+            $w = Get-TextLogoWidth -Path $f.FullName
+            $h = @([IO.File]::ReadAllLines($f.FullName)).Count
+        }
+        if ($w -le 0 -or $h -le 0 -or $w -gt $Room -or $h -gt $Rows) { continue }
         if ($null -eq $best -or ($w * $h) -gt ([int]$best.W * [int]$best.H)) {
             $best = @{ W = $w; H = $h; Path = $f.FullName }
         }
@@ -1018,18 +1027,13 @@ function global:Show-FFSFetch {
             }
         }
         if (-not $fit) {
-            # Nothing in the ladder fits. The block art is the same picture at
-            # block resolution - pure text, so it cannot tear - and when even
-            # that is too wide the frame is drawn on its own.
+            # Nothing in the picture's ladder fits. The block art is the same
+            # picture at block resolution - pure text, so it cannot tear - and
+            # when even that is too wide the frame is drawn on its own.
             $w = 0
             $art = Get-FFSArtFit -Path $Plan.Art -Dir $Plan.ArtsDir -Room $room -Rows $rowRoom
-            if ($art) {
-                $logo = @('--logo', $art.Path)
-            } elseif ($Plan.Art -and (Get-TextLogoWidth -Path $Plan.Art) -le $room) {
-                $logo = @('--logo', $Plan.Art)
-            } else {
-                $logo = @('--logo', 'none')
-            }
+            if ($art) { $logo = @('--logo', $art.Path) }
+            else { $logo = @('--logo', 'none') }
         } elseif ($Plan.Kind -eq 'sixel') {
             $w = [int]$fit.W
             $h = [int]$fit.H
@@ -1053,13 +1057,10 @@ function global:Show-FFSFetch {
         # fastfetch prints a *text* logo file verbatim - --logo-width has no
         # effect on it - so the block art is drawn only when it fits, and
         # nothing is drawn when it does not rather than fall back to a *wider*
-        # logo: the built-in ASCII one is 40 columns and would be worse.
-        #
-        # The art ladder is tried first, so a narrow window gets a smaller
-        # render of the same picture instead of nothing.
+        # logo: the built-in ASCII one is 40 columns and would be worse. The
+        # ladder means a narrow window gets a smaller render instead of nothing.
         $art = Get-FFSArtFit -Path $Plan.Logo -Dir $Plan.ArtsDir -Room $room -Rows $rowRoom
         if ($art) { $logo = @('--logo', $art.Path) }
-        elseif ((Get-TextLogoWidth -Path $Plan.Logo) -le $room) { $logo = @('--logo', $Plan.Logo) }
         else { $logo = @('--logo', 'none') }
     } else {
         $logo = @('--logo', 'Windows11')    # the built-in tinted ASCII logo
@@ -1619,17 +1620,26 @@ function global:Get-FFSLogoFit {
 }
 
 function global:Get-FFSArtFit {
-    # The same choice for the block-art ladder: a text logo cannot tear, so it is
-    # what a window too narrow or too short for the picture gets. The size is in
-    # the name, written by the encoder from the very cells it rendered.
+    # The same choice for the block art: a text logo cannot tear, so it is what a
+    # window too narrow or too short for the picture gets. The full-size file is
+    # a candidate like any other - it is measured (that is what makes it drawable
+    # at all) and the variants carry their size in the name, written by the
+    # encoder from the very cells it rendered.
     param([string]$Path, [string]$Dir, [int]$Room, [int]$Rows)
     if (-not $Path -or -not $Dir) { return $null }
     $base = [IO.Path]::GetFileNameWithoutExtension($Path)
+    $files = @(Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue)
+    $files += @(Get-ChildItem -LiteralPath $Dir -Filter ($base + '-*x*.art') -File -ErrorAction SilentlyContinue)
     $best = $null
-    foreach ($f in @(Get-ChildItem -LiteralPath $Dir -Filter ($base + '-*x*.art') -File -ErrorAction SilentlyContinue)) {
-        if ($f.BaseName -notmatch '-(\d+)x(\d+)$') { continue }
-        $w = [int]$Matches[1]; $h = [int]$Matches[2]
-        if ($w -gt $Room -or $h -gt $Rows) { continue }
+    foreach ($f in $files) {
+        $w = 0; $h = 0
+        if ($f.BaseName -match '-(\d+)x(\d+)$') {
+            $w = [int]$Matches[1]; $h = [int]$Matches[2]
+        } else {
+            $w = Get-TextLogoWidth -Path $f.FullName
+            $h = @([IO.File]::ReadAllLines($f.FullName)).Count
+        }
+        if ($w -le 0 -or $h -le 0 -or $w -gt $Room -or $h -gt $Rows) { continue }
         if ($null -eq $best -or ($w * $h) -gt ([int]$best.W * [int]$best.H)) {
             $best = @{ W = $w; H = $h; Path = $f.FullName }
         }
@@ -1697,13 +1707,7 @@ function global:Show-FFSFetch {
     # A text logo cannot be scaled - --logo-width does nothing to a file - so the
     # only way to keep the frame intact is to draw it only when it fits, and to
     # draw nothing when it does not rather than fall back to a wider logo.
-    $art = $null
-    if (Test-Path -LiteralPath $Plan.Art) {
-        $art = Get-FFSArtFit -Path $Plan.Art -Dir (Split-Path -Parent $Plan.Art) -Room $room -Rows $rowRoom
-    }
-    $artW = 0
-    if (Test-Path -LiteralPath $Plan.Art) { $artW = Get-TextLogoWidth -Path $Plan.Art }
-    $artFits = $artW -gt 0 -and $artW -le $room
+    $art = Get-FFSArtFit -Path $Plan.Art -Dir (Split-Path -Parent $Plan.Art) -Room $room -Rows $rowRoom
     $ffArgs = @()
     if ($Plan.Theme) { $ffArgs += $Plan.Theme }
     $narrow = ''
@@ -1711,7 +1715,7 @@ function global:Show-FFSFetch {
         # A console with no image protocol at all: fastfetch prints a *text* logo
         # file verbatim, so the block art is the only way this terminal can show
         # the user's own picture - and it cannot tear.
-        if ($artFits) { $ffArgs += @('--logo', $Plan.Art) }
+        if ($art) { $ffArgs += @('--logo', $art.Path) }
         elseif (Test-Path -LiteralPath $Plan.Art) {
             $ffArgs += @('--logo', 'none')
             $narrow = 'is too narrow for the logo beside the frame.'
@@ -1719,14 +1723,10 @@ function global:Show-FFSFetch {
     } elseif ($fit) {
         $ffArgs += @('--logo-type', 'raw', '--logo', $fit.Path, '--logo-width', $w, '--logo-height', $h, '--logo-print-remaining', 'false')
     } elseif ($art) {
-        # Nothing in the picture's ladder fits, but a smaller block-art render of
-        # the same picture does: block resolution, nothing to tear.
+        # No room for the picture, or no image protocol to draw it into (a bare
+        # console). fastfetch prints a *text* logo file verbatim, so the block art
+        # - the same picture at block resolution - is drawn when one fits.
         $ffArgs += @('--logo', $art.Path)
-    } elseif ($artFits -and (Test-Path -LiteralPath $Plan.Art)) {
-        # No image protocol to draw into - a bare console, say. fastfetch prints
-        # a *text* logo file verbatim, so the block art still shows the user's
-        # picture.
-        $ffArgs += @('--logo', $Plan.Art)
     } elseif (Test-Path -LiteralPath $Plan.Art) {
         # The art is there but wider than the room the frame leaves. Drawing it
         # anyway is what pushed the frame off the edge.

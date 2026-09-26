@@ -202,9 +202,10 @@ jobs:
           foreach ($d in 'sixels', 'pngs', 'themes', 'gui', 'arts') {
             New-Item -ItemType Directory -Path (Join-Path $root $d) -Force | Out-Null
           }
-          Set-Content -LiteralPath (Join-Path $root 'sixels\demo.sixel') -Value 'x' -NoNewline
+          # Real fixtures: the launcher chooses between the ladder's files by
+          # reading their rasters, so a stub sixel only tests the failure path.
+          python tools/make-logo-fixtures.py --sixel-dir (Join-Path $root 'sixels') --art-dir (Join-Path $root 'arts') --name demo
           Set-Content -LiteralPath (Join-Path $root 'pngs\demo.png') -Value 'x' -NoNewline
-          Set-Content -LiteralPath (Join-Path $root 'arts\demo.art') -Value 'art' -NoNewline
           Set-Content -LiteralPath (Join-Path $root 'themes\theme-01.jsonc') -Value '{"modules":[]}'
           # A pinned logo is what makes the fallback explain itself. No
           # 'frequency' key on purpose: the previous step left a today-dated
@@ -224,6 +225,12 @@ jobs:
           $src = $src.Replace('& $Plan.Exe @a',
                               "Add-Content -LiteralPath `$env:FF_LOG -Value (`$a -join ' ')")
           Set-Content -LiteralPath $probe -Value $src
+          # The branch each host takes must not depend on how wide the runner's
+          # own console happens to be: 80 columns leaves room 29, which holds the
+          # configured 28x24 logo (and its 28x24 block art).
+          $pin = $src.Replace('[Console]::WindowWidth', '80').Replace('[Console]::WindowHeight', '42')
+          $pinned = Join-Path $env:TEMP 'logo-probe-pinned.ps1'
+          Set-Content -LiteralPath $pinned -Value $pin
 
           $saved = @('WT_SESSION', 'TERM_PROGRAM', 'WEZTERM_PANE', 'KITTY_WINDOW_ID', 'TERM', 'FASTFETCH_STUDIO_LOGO')
 
@@ -231,7 +238,7 @@ jobs:
             foreach ($k in $saved) { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue }
           }
 
-          function Get-Branch([hashtable]$overrides, [string]$Script = $probe) {
+          function Get-Branch([hashtable]$overrides, [string]$Script = $pinned) {
             Clear-Term
             # Each case models a fresh shell.
             $global:FastFetchStudioDrawn = $false
@@ -262,24 +269,35 @@ jobs:
           }
 
           # A block art logo is a text file that fastfetch prints verbatim, so
-          # --logo-width cannot shrink it the way it shrinks a sixel. An art
-          # wider than the room the frame leaves is dropped rather than allowed
-          # to push the frame's corner off the window. Both sides pinned at the
-          # same forced width, so this does not depend on the runner's console.
+          # --logo-width cannot shrink it the way it shrinks a sixel. An art too
+          # wide for the room the frame leaves is dropped rather than allowed to
+          # push the frame's corner off the window - and because the art is
+          # pre-rendered at several sizes, "dropped" means a smaller render of
+          # the same picture, or the frame alone when none of them fits either.
+          # Every width is forced, so this does not depend on the runner's own
+          # console size.
           $artProbe = Join-Path $env:TEMP 'logo-probe-art.ps1'
-          # $src is the branch probe from above: already swapped, and the size it
-          # reads is pinned here rather than left to the runner's window.
-          $artBase = $src.Replace('[Console]::WindowWidth', '80')
           $artFile = Join-Path $root 'arts\demo.art'
+          $realArt = Get-Content -LiteralPath $artFile -Raw
+          # 61 columns leaves room 10: nothing in the ladder fits, so the frame is
+          # drawn on its own.
           Set-Content -LiteralPath $artFile -Value ('x' * 40) -NoNewline
-          Set-Content -LiteralPath $artProbe -Value $artBase
+          Set-Content -LiteralPath $artProbe -Value ($src.Replace('[Console]::WindowWidth', '61').Replace('[Console]::WindowHeight', '42'))
           $overWide = Get-Branch @{} $artProbe
           Write-Host ("  {0,-28} -> {1}" -f 'art wider than the room', $overWide)
           if ($overWide -notmatch [regex]::Escape('--logo none')) {
             throw "an over-wide block art drew '$overWide', expected the frame alone"
           }
-          Set-Content -LiteralPath $artFile -Value 'art' -NoNewline
-          $artFits = Get-Branch @{} $artProbe
+          # 75 columns leaves room 24: too narrow for the 28-column art, so the
+          # ladder's 24x21 render is drawn instead of nothing.
+          Set-Content -LiteralPath $artProbe -Value ($src.Replace('[Console]::WindowWidth', '75').Replace('[Console]::WindowHeight', '42'))
+          $smaller = Get-Branch @{} $artProbe
+          Write-Host ("  {0,-28} -> {1}" -f 'art too wide, smaller step', $smaller)
+          if ($smaller -notmatch [regex]::Escape('arts\demo-24x21.art')) {
+            throw "a too-wide block art drew '$smaller', expected the ladder's 24x21 render"
+          }
+          Set-Content -LiteralPath $artFile -Value $realArt -NoNewline
+          $artFits = Get-Branch @{}
           Write-Host ("  {0,-28} -> {1}" -f 'art that fits', $artFits)
           if ($artFits -notmatch [regex]::Escape('arts\demo.art')) {
             throw "a block art that fits drew '$artFits', expected the art"
