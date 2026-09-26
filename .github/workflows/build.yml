@@ -76,22 +76,22 @@ jobs:
           if (@($errs).Count) { throw "launcher has syntax errors: $($errs[0].Message)" }
           Write-Host 'launcher parses cleanly'
 
-          # Replace each real invocation with a log write that also models the
-          # exe's exit code. Swapping in a bare cmdlet would leave $LASTEXITCODE
-          # unset, and "$null -ne 0" is TRUE in PowerShell - which is precisely
-          # how the fallback came to fire on a successful run.
+          # Every draw - the first one and the repair after a resize - goes
+          # through one function, so there is exactly one line to replace. The
+          # log write also models the exe's exit code: swapping in a bare cmdlet
+          # would leave $LASTEXITCODE unset, and "$null -ne 0" is TRUE in
+          # PowerShell - which is precisely how the fallback came to fire on a
+          # successful run.
           $probe = Join-Path $env:TEMP 'launcher-probe.ps1'
           $inv   = Join-Path $env:TEMP 'launcher-inv.txt'
           $log   = "Add-Content -LiteralPath '$inv' -Value 'run'`n`$global:LASTEXITCODE = [int]`$env:FF_RC"
           $src = Get-Content -LiteralPath $launcher -Raw
-          $src = $src.Replace('& $ffExe @themeArg @logoArg @fitArgs', $log)
-          $src = $src.Replace("& `$ffExe @themeArg --logo 'Windows11' @colorArgs @fitArgs", $log)
-          $src = $src.Replace('& $ffExe @themeArg --logo $fbLogo @colorArgs @fitArgs', $log)
-          # These swaps match the whole invocation, so adding an argument to the
-          # launcher silently stops the swap from matching - and the leftover
-          # text is a *parse* error in the probe, which then surfaces as some
-          # unrelated assertion failing. Fail here instead.
-          if ($src -match '& \$ffExe') { throw 'a launcher invocation was not swapped out for the probe' }
+          $src = $src.Replace('& $Plan.Exe @a', $log)
+          # The swap matches the whole invocation, so renaming its variables or
+          # moving the call silently stops it matching - and the leftover text is
+          # a *parse* error in the probe, which then surfaces as some unrelated
+          # assertion failing. Fail here instead.
+          if ($src -match '& \$Plan\.Exe') { throw 'the launcher invocation was not swapped out for the probe' }
           Set-Content -LiteralPath $probe -Value $src
 
           function Count-Runs([int]$rc) {
@@ -211,17 +211,13 @@ jobs:
           New-Item -ItemType Directory -Path $bin -Force | Out-Null
           Set-Content -LiteralPath (Join-Path $bin 'fastfetch.exe') -Value '' -NoNewline
 
-          # Give each branch a distinct log value: counting invocations cannot
-          # tell a sixel draw from the block art from the ASCII fallback. The
-          # final branch is shared by art and builtin, so it logs the leaf name.
+          # Counting invocations cannot tell a sixel draw from the block art
+          # from the ASCII fallback, and there is one invocation site now, so the
+          # probe logs the arguments it was handed and the cases match on those.
           $probe = Join-Path $env:TEMP 'logo-probe.ps1'
           $src = Get-Content -LiteralPath $launcher -Raw
-          $src = $src.Replace('& $ffExe @themeArg @logoArg @fitArgs',
-                              "Add-Content -LiteralPath `$env:FF_LOG -Value 'image'")
-          $src = $src.Replace("& `$ffExe @themeArg --logo 'Windows11' @colorArgs @fitArgs",
-                              "Add-Content -LiteralPath `$env:FF_LOG -Value 'builtin'")
-          $src = $src.Replace('& $ffExe @themeArg --logo $fbLogo @colorArgs @fitArgs',
-                              "Add-Content -LiteralPath `$env:FF_LOG -Value ('fallback=' + (Split-Path -Leaf `$fbLogo))")
+          $src = $src.Replace('& $Plan.Exe @a',
+                              "Add-Content -LiteralPath `$env:FF_LOG -Value (`$a -join ' ')")
           Set-Content -LiteralPath $probe -Value $src
 
           $saved = @('WT_SESSION', 'TERM_PROGRAM', 'WEZTERM_PANE', 'KITTY_WINDOW_ID', 'TERM', 'FASTFETCH_STUDIO_LOGO')
@@ -243,19 +239,21 @@ jobs:
           }
 
           $cases = @(
-            @{ name = 'conhost -> block art';        over = @{};                                       want = 'fallback=demo.art' },
-            @{ name = 'windows-terminal';            over = @{ WT_SESSION = 'ci' };                     want = 'image' },
-            @{ name = 'wezterm';                     over = @{ TERM_PROGRAM = 'WezTerm' };             want = 'image' },
-            @{ name = 'kitty';                       over = @{ KITTY_WINDOW_ID = '1' };                want = 'image' },
-            @{ name = 'foot';                        over = @{ TERM = 'foot' };                        want = 'image' },
-            @{ name = 'vs code (no image support)';  over = @{ TERM_PROGRAM = 'vscode' };              want = 'fallback=demo.art' },
-            @{ name = 'forced builtin in wt';        over = @{ WT_SESSION = 'ci'; FASTFETCH_STUDIO_LOGO = 'builtin' }; want = 'fallback=Windows11' },
-            @{ name = 'forced image on conhost';     over = @{ FASTFETCH_STUDIO_LOGO = 'image' };      want = 'image' }
+            @{ name = 'conhost -> block art';        over = @{};                                       want = 'arts\demo.art' },
+            @{ name = 'windows-terminal';            over = @{ WT_SESSION = 'ci' };                     want = '--logo-type raw' },
+            @{ name = 'wezterm';                     over = @{ TERM_PROGRAM = 'WezTerm' };             want = '--logo-type raw' },
+            @{ name = 'kitty';                       over = @{ KITTY_WINDOW_ID = '1' };                want = '--logo-type kitty-direct' },
+            @{ name = 'foot';                        over = @{ TERM = 'foot' };                        want = '--logo-type raw' },
+            @{ name = 'vs code (no image support)';  over = @{ TERM_PROGRAM = 'vscode' };              want = 'arts\demo.art' },
+            @{ name = 'forced builtin in wt';        over = @{ WT_SESSION = 'ci'; FASTFETCH_STUDIO_LOGO = 'builtin' }; want = '--logo Windows11' },
+            @{ name = 'forced image on conhost';     over = @{ FASTFETCH_STUDIO_LOGO = 'image' };      want = '--logo-type raw' }
           )
           foreach ($c in $cases) {
             $got = Get-Branch $c.over
             Write-Host ("  {0,-28} -> {1}" -f $c.name, $got)
-            if ($got -ne $c.want) { throw "logo mode '$($c.name)' drew '$got', expected '$($c.want)'" }
+            if ($got -notmatch [regex]::Escape($c.want)) {
+              throw "logo mode '$($c.name)' drew '$got', expected '$($c.want)'"
+            }
           }
 
           # A block art logo is a text file that fastfetch prints verbatim, so
@@ -264,19 +262,21 @@ jobs:
           # to push the frame's corner off the window. Both sides pinned at the
           # same forced width, so this does not depend on the runner's console.
           $artProbe = Join-Path $env:TEMP 'logo-probe-art.ps1'
-          $artBase = $src.Replace('$ffCols = [Console]::WindowWidth', '$ffCols = 80')
+          # $src is the branch probe from above: already swapped, and the size it
+          # reads is pinned here rather than left to the runner's window.
+          $artBase = $src.Replace('[Console]::WindowWidth', '80')
           $artFile = Join-Path $root 'arts\demo.art'
           Set-Content -LiteralPath $artFile -Value ('x' * 40) -NoNewline
           Set-Content -LiteralPath $artProbe -Value $artBase
           $overWide = Get-Branch @{} $artProbe
           Write-Host ("  {0,-28} -> {1}" -f 'art wider than the room', $overWide)
-          if ($overWide -ne 'fallback=none') {
+          if ($overWide -notmatch [regex]::Escape('--logo none')) {
             throw "an over-wide block art drew '$overWide', expected the frame alone"
           }
           Set-Content -LiteralPath $artFile -Value 'art' -NoNewline
           $artFits = Get-Branch @{} $artProbe
           Write-Host ("  {0,-28} -> {1}" -f 'art that fits', $artFits)
-          if ($artFits -ne 'fallback=demo.art') {
+          if ($artFits -notmatch [regex]::Escape('arts\demo.art')) {
             throw "a block art that fits drew '$artFits', expected the art"
           }
 
@@ -285,7 +285,7 @@ jobs:
           Remove-Item -LiteralPath (Join-Path $root 'arts') -Recurse -Force
           $noArt = Get-Branch @{}
           Write-Host ("  {0,-28} -> {1}" -f 'conhost, no art at all', $noArt)
-          if ($noArt -ne 'fallback=Windows11') {
+          if ($noArt -notmatch [regex]::Escape('--logo Windows11')) {
             throw "without art the launcher drew '$noArt', expected the built-in logo"
           }
 
@@ -301,7 +301,7 @@ jobs:
             $src.Replace('elseif (Test-WindowsTerminalHost) {', 'elseif ($true) {')
           $viaTree = Get-Branch @{} $hostProbe
           Write-Host ("  {0,-28} -> {1}" -f 'wt tab, WT_SESSION gone', $viaTree)
-          if ($viaTree -ne 'image') {
+          if ($viaTree -notmatch [regex]::Escape('--logo-type raw')) {
             throw "a Windows Terminal tab without WT_SESSION drew '$viaTree', expected the sixel"
           }
 
@@ -328,11 +328,10 @@ jobs:
           # border on the next row, long values split in half, the logo
           # overlapped. The launcher now gives the logo only what is left after
           # the frame, and refuses to let fastfetch wrap at all.
-          $calls = @($body -split "`n" | Where-Object { $_ -match '^\s*& \$ffExe' })
-          if ($calls.Count -lt 3) { throw "expected 3 fastfetch invocations in the launcher, found $($calls.Count)" }
-          foreach ($line in $calls) {
-            if ($line -notmatch '@fitArgs') { throw "an invocation does not refuse line wrapping: $line" }
-          }
+          $calls = @($body -split "`n" | Where-Object { $_ -match '^\s*& \$Plan\.Exe' })
+          if ($calls.Count -ne 1) { throw "expected one fastfetch invocation site, found $($calls.Count)" }
+          if ($body -notmatch '--disable-linewrap') { throw 'the launcher never refuses line wrapping' }
+          if ($body -notmatch '\$ffArgs \+= \$Plan\.Fit') { throw 'the draw does not refuse line wrapping' }
           if ($body -notmatch "'--logo', 'none'") {
             throw 'the launcher cannot drop the logo when the window is too narrow for it'
           }
@@ -344,30 +343,28 @@ jobs:
           # pair "fits" on paper while the frame's corner is still pushed three
           # columns off the edge - measured in a real 71-column window.
           $fitProbe = Join-Path $env:TEMP 'logo-probe-fit.ps1'
-          $fitBase = $body.Replace('& $ffExe @themeArg @logoArg @fitArgs',
-                                   "Add-Content -LiteralPath `$env:FF_LOG -Value ('w=' + `$w + ' h=' + `$h)")
-          $fitBase = $fitBase.Replace("& `$ffExe @themeArg --logo 'Windows11' @colorArgs @fitArgs",
-                                      "Add-Content -LiteralPath `$env:FF_LOG -Value 'builtin'")
-          $fitBase = $fitBase.Replace('& $ffExe @themeArg --logo $fbLogo @colorArgs @fitArgs',
-                                      "Add-Content -LiteralPath `$env:FF_LOG -Value 'fallback'")
-          if ($fitBase -match '& \$ffExe') { throw 'a launcher invocation was not swapped out for the fit probe' }
+          $fitBase = $body.Replace('& $Plan.Exe @a',
+                                   "Add-Content -LiteralPath `$env:FF_LOG -Value (`$a -join ' ')")
+          if ($fitBase -match '& \$Plan\.Exe') { throw 'the launcher invocation was not swapped out for the fit probe' }
 
           $fitCases = @(
-            @{ cols = 120; want = 'w=28 h=24' },   # room 69 - the logo fits as configured
-            @{ cols =  80; want = 'w=28 h=24' },   # room 29
-            @{ cols =  75; want = 'w=24 h=21' },   # room 24 - scaled, aspect kept
-            @{ cols =  74; want = 'w=23 h=20' },
-            @{ cols =  64; want = 'w=13 h=11' },
-            @{ cols =  61; want = 'w=10 h=9' },    # room 10 - the floor
-            @{ cols =  60; want = 'w=0 h=24' }     # room 9 - too narrow, no logo
+            @{ cols = 120; want = '--logo-width 28 --logo-height 24' },   # room 69 - as configured
+            @{ cols =  80; want = '--logo-width 28 --logo-height 24' },   # room 29
+            @{ cols =  75; want = '--logo-width 24 --logo-height 21' },   # room 24 - scaled, aspect kept
+            @{ cols =  74; want = '--logo-width 23 --logo-height 20' },
+            @{ cols =  64; want = '--logo-width 13 --logo-height 11' },
+            @{ cols =  61; want = '--logo-width 10 --logo-height 9' },    # room 10 - the floor
+            @{ cols =  60; want = '--logo none' }                         # room 9 - too narrow, no logo
           )
           foreach ($c in $fitCases) {
             Set-Content -LiteralPath $fitProbe -Value `
-              $fitBase.Replace('$ffCols = [Console]::WindowWidth', ('$ffCols = ' + $c.cols))
+              $fitBase.Replace('[Console]::WindowWidth', [string]$c.cols)
             # WT_SESSION so the sixel branch runs: that is the one that sizes the logo.
             $got = Get-Branch @{ WT_SESSION = 'ci' } $fitProbe
             Write-Host ("  window {0,3} cols         -> {1}" -f $c.cols, $got)
-            if ($got -ne $c.want) { throw "a $($c.cols)-column window drew '$got', expected '$($c.want)'" }
+            if ($got -notmatch [regex]::Escape($c.want)) {
+              throw "a $($c.cols)-column window drew '$got', expected '$($c.want)'"
+            }
           }
           Write-Host 'window fitting ok (logo scaled to the room the frame leaves; wrapping refused)'
 
@@ -385,6 +382,125 @@ jobs:
             throw "fallback did not offer the override: $msg"
           }
           Write-Host 'logo mode ok (branches pinned; art fallback; fallback explains itself)'
+
+      # The logo is a raster image anchored to the cells it was drawn over, so a
+      # window resize - Alt+Enter (Windows Terminal's toggleFullscreen), F11,
+      # dragging an edge, Ctrl+scroll zooming the font - reflows the text under it
+      # and tears the picture into bands. There is no resize event to subscribe
+      # to on Windows (ReadConsoleInput is the only signal and PSReadLine owns
+      # that buffer), so the prompt notices the grid changed and draws the same
+      # fetch again at the new size, erasing the torn copy first. It must never
+      # re-roll the theme or the picture: a resize is not a new shell.
+      - name: The fetch repairs itself after a window resize
+        shell: pwsh
+        run: |
+          python -c "import app; app.generate_launcher({'logWidth':28,'logHeight':24})"
+          $root = Join-Path $env:USERPROFILE '.config\fastfetch'
+          $launcher = Join-Path $root 'fastfetch-random.ps1'
+          $body = Get-Content -LiteralPath $launcher -Raw
+          if ($body -notmatch 'Install-FFSResizeGuard') { throw 'the launcher has no resize guard' }
+          if ($body -notmatch '\$redrawOnResize = \$true') { throw 'the guard is not on by default' }
+          Write-Host 'launcher carries the resize guard'
+
+          foreach ($d in 'themes', 'sixels', 'gui', 'arts') {
+            New-Item -ItemType Directory -Path (Join-Path $root $d) -Force | Out-Null
+          }
+          Set-Content -LiteralPath (Join-Path $root 'themes\theme-01.jsonc') -Value '{"modules":[]}'
+          Set-Content -LiteralPath (Join-Path $root 'sixels\demo.sixel') -Value 'x' -NoNewline
+          $bin = Join-Path $env:USERPROFILE '.local\bin'
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $bin 'fastfetch.exe') -Value '' -NoNewline
+          $state = Join-Path $root 'gui\studio-state.json'
+          $log   = Join-Path $env:TEMP 'resize-log.txt'
+
+          function New-ResizeProbe([int]$FirstCols, [string]$Then) {
+            $src = Get-Content -LiteralPath $launcher -Raw
+            # Pin the size the first draw sees, log every draw, and log the
+            # erase - a torn image can only be removed by erasing its cells, so
+            # a repair that skips it would draw a second fetch under a broken one.
+            $src = $src.Replace('$c = [int][Console]::WindowWidth; $r = [int][Console]::WindowHeight',
+                                ('$c = ' + $FirstCols + '; $r = 40'))
+            $src = $src.Replace('& $Plan.Exe @a',
+                                "Add-Content -LiteralPath `$env:FF_LOG -Value (`$a -join ' ')")
+            $src = $src.Replace('try { [Console]::Clear() } catch { }',
+                                "Add-Content -LiteralPath `$env:FF_LOG -Value 'erase'")
+            # Appended last, so only the size polled *after* the first draw
+            # changes. That is the resize; the first draw still sees FirstCols.
+            $src += "`nfunction global:Get-FFSGrid { return @($Then) }`n"
+            $out = Join-Path $env:TEMP 'resize-probe.ps1'
+            Set-Content -LiteralPath $out -Value $src
+            return $out
+          }
+
+          function Resized([string]$StateJson, [string]$Then = '61, 30') {
+            Set-Content -LiteralPath $state -Value $StateJson
+            $probe = New-ResizeProbe -FirstCols 120 -Then $Then
+            $env:FF_LOG = $log
+            $env:WT_SESSION = 'ci'
+            # A fresh shell: the plan, the guard and the captured prompt are all
+            # per session, and the runner is one long-lived pwsh.
+            $global:FastFetchStudioDrawn = $false
+            $global:FFSGuardInstalled = $false
+            $global:FFSPlan = $null
+            $global:FFSPrevPrompt = $null
+            Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+            & $probe *>&1 | Out-Null
+            $before = @(Get-Content -LiteralPath $log)
+            $shown  = prompt
+            $after  = @(Get-Content -LiteralPath $log)
+            $null   = prompt
+            $again  = @(Get-Content -LiteralPath $log)
+            Remove-Item Env:\WT_SESSION -ErrorAction SilentlyContinue
+            return @{ Before = $before; After = $after; Loop = $again.Count - $after.Count; Prompt = $shown }
+          }
+
+          $on  = '{"randomLogo":true,"randomTheme":true,"logWidth":28,"logHeight":24,"redrawOnResize":true}'
+          $off = '{"randomLogo":true,"randomTheme":true,"logWidth":28,"logHeight":24,"redrawOnResize":false}'
+
+          # 120 columns -> 61: the logo is re-fitted (28x24 -> 10x9), the torn
+          # copy is erased, and the theme and picture are the same ones.
+          $r = Resized $on
+          $draws = @($r.After | Where-Object { $_ -match '--logo' })
+          Write-Host "  after a resize -> $($draws -join ' | ')"
+          if ($draws.Count -ne 2) { throw "expected the first draw plus one repair, got $($draws.Count)" }
+          if ($draws[0] -notmatch '--logo-width 28 --logo-height 24') { throw "first draw wrong: $($draws[0])" }
+          if (-not ($r.After | Where-Object { $_ -eq 'erase' })) { throw 'the torn copy was never erased' }
+          if ($draws[1] -notmatch '--logo-width 10 --logo-height 9') { throw "the repair drew the wrong size: $($draws[1])" }
+          if (($draws[0] -split ' --')[0] -ne ($draws[1] -split ' --')[0]) {
+            throw 'the theme changed on resize; a resize is not a new shell'
+          }
+          $img0 = ([regex]::Match($draws[0], 'sixels\\[^ ]*\.sixel')).Value
+          $img1 = ([regex]::Match($draws[1], 'sixels\\[^ ]*\.sixel')).Value
+          if (-not $img0) { throw "the first draw did not use the sixel fixture: $($draws[0])" }
+          if ($img0 -ne $img1) { throw "the picture changed on resize: $img0 -> $img1" }
+          if ($r.Loop -ne 0) { throw "the fetch was redrawn again with no resize ($($r.Loop) extra lines)" }
+          Write-Host 'resize ok (same theme, same picture, re-fitted, erased, no loop)'
+
+          # A shell that already has a prompt of its own keeps it.
+          function global:prompt { 'USER-PROMPT>' }
+          $global:FFSPrevPrompt = $null
+          $r2 = Resized $on
+          if ($r2.Prompt -notmatch 'USER-PROMPT>') { throw "the user's prompt was replaced: $($r2.Prompt)" }
+          if (@($r2.After | Where-Object { $_ -match '--logo-width 10' }).Count -ne 1) {
+            throw 'a shell with its own prompt did not get the repair'
+          }
+          Write-Host 'chained prompt ok (repair still runs, prompt text untouched)'
+
+          # Off means off: no guard is installed, so the screen is never touched.
+          $r3 = Resized $off
+          $draws3 = @($r3.After | Where-Object { $_ -match '--logo' })
+          if ($draws3.Count -ne 1) { throw "the fetch was redrawn with the setting off: $($r3.After -join ' | ')" }
+          Write-Host 'redraw off ok (the screen is never touched)'
+
+          # The switch is baked in as well as read from the state file, so a
+          # launcher that has never met a state file still knows the default.
+          python -c "import app; app.generate_launcher({'logWidth':28,'logHeight':24,'redrawOnResize':False})"
+          $offBody = Get-Content -LiteralPath $launcher -Raw
+          if ($offBody -notmatch '\$redrawOnResize = \$false') { throw 'redrawOnResize:false did not render as $false' }
+          Write-Host 'guard default ok (baked in, overridable from the state file)'
+
+          # Leave the default launcher behind, as the other steps expect it.
+          python -c "import app; app.generate_launcher({'logWidth':28,'logHeight':24})"
 
       # "Preview in terminal" used to fail with
       #   Error 2147942402 (0x80070002) when launching `" & "$env:USERPROFILE\..."`
@@ -434,29 +550,29 @@ jobs:
           if ($joined -match 'wt\.exe.*-Command') { throw "preview still uses -Command: $joined" }
           Write-Host '-NoExit sits before -File'
 
-          # Behaviour: swap each invocation for a log write, then check the branch
-          # each way of launching the script actually takes.
+          # Behaviour: swap the draw for a log write of the arguments it was
+          # handed, then check the branch each way of launching the script takes.
           $probe = Join-Path $env:TEMP 'preview-probe.ps1'
           $log = Join-Path $env:TEMP 'preview-log.txt'
           $src = Get-Content -LiteralPath $script -Raw
-          $src = $src.Replace(
-            '& $ffExe @themeArg --logo-type raw --logo $sixel --logo-width $w --logo-height $h @fitArgs',
-            "Add-Content -LiteralPath `$env:FF_LOG -Value 'sixel'")
-          $src = $src.Replace('& $ffExe @themeArg --logo $art @fitArgs',
-                              "Add-Content -LiteralPath `$env:FF_LOG -Value 'art'")
-          $src = $src.Replace('& $ffExe @themeArg --logo Windows11 @fitArgs',
-                              "Add-Content -LiteralPath `$env:FF_LOG -Value 'builtin'")
-          $src = $src.Replace('& $ffExe @themeArg --logo none @fitArgs',
-                              "Add-Content -LiteralPath `$env:FF_LOG -Value 'none'")
-          if ($src -match '& \$ffExe') { throw 'a preview invocation was not swapped out for the probe' }
+          $src = $src.Replace('& $Plan.Exe @a',
+                              "Add-Content -LiteralPath `$env:FF_LOG -Value (`$a -join ' ')")
+          if ($src -match '& \$Plan\.Exe') { throw 'the preview invocation was not swapped out for the probe' }
 
-          # Every invocation has to refuse line wrapping: fastfetch cannot know a
-          # frame is drawn beside the text, so a row longer than the window wraps
-          # and takes the frame's border with it.
-          foreach ($line in @($body -split "`n" | Where-Object { $_ -match '^\s*& \$ffExe' })) {
-            if ($line -notmatch '@fitArgs') { throw "a preview invocation does not refuse wrapping: $line" }
+          # The draw has to refuse line wrapping: fastfetch cannot know a frame
+          # is drawn beside the text, so a row longer than the window wraps and
+          # takes the frame's border with it.
+          if ($body -notmatch '\$ffArgs \+= \$Plan\.Fit') {
+            throw 'the preview draw does not refuse wrapping'
           }
           Set-Content -LiteralPath $probe -Value $src
+
+          function Assert-Preview([string]$name, [string]$got, [string]$want) {
+            Write-Host ("  {0,-24} -> {1}" -f $name, $got)
+            if ($got -notmatch [regex]::Escape($want)) {
+              throw "preview drew '$got' for '$name', expected '$want'"
+            }
+          }
 
           # fastfetch is not installed on the runner, so the script would bail out
           # before reaching any branch. Point it at a file that exists.
@@ -484,22 +600,16 @@ jobs:
           }
 
           Set-Content -LiteralPath $sixel -Value 'x' -NoNewline
-          $withSixel = Get-PreviewBranch
-          Write-Host "  sixel present           -> $withSixel"
-          if ($withSixel -ne 'sixel') { throw "preview drew '$withSixel' with a sixel available, expected 'sixel'" }
+          Assert-Preview 'sixel present' (Get-PreviewBranch) '--logo-type raw'
 
           # No sixel (Pillow missing, say) must still show the picture as block art.
           Remove-Item -LiteralPath $sixel -Force
-          $noSixel = Get-PreviewBranch
-          Write-Host "  no sixel, art available -> $noSixel"
-          if ($noSixel -ne 'art') { throw "preview drew '$noSixel' without a sixel, expected 'art'" }
+          Assert-Preview 'no sixel, art available' (Get-PreviewBranch) 'arts\img.art'
 
           # -BlockArt is what the no-wt.exe console fallback passes: a bare console
           # cannot draw sixel, so it must go straight to the art even if one exists.
           Set-Content -LiteralPath $sixel -Value 'x' -NoNewline
-          $forced = Get-PreviewBranch -BlockArt
-          Write-Host "  -BlockArt               -> $forced"
-          if ($forced -ne 'art') { throw "-BlockArt drew '$forced', expected 'art'" }
+          Assert-Preview '-BlockArt' (Get-PreviewBranch -BlockArt) 'arts\img.art'
 
           # A text logo cannot be scaled by --logo-width, so an art wider than the
           # room the frame leaves has to be dropped: drawing it pushes the frame
@@ -509,20 +619,14 @@ jobs:
           $artFile = Join-Path $arts 'img.art'
           Set-Content -LiteralPath $artFile -Value ('x' * 40) -NoNewline
           Set-Content -LiteralPath $wideArtProbe -Value `
-            $src.Replace('$ffRoom = $ffCols -', '$ffRoom = 61 -')
-          $overWide = Get-PreviewBranch -BlockArt -Script $wideArtProbe
-          Write-Host "  art wider than the room -> $overWide"
-          if ($overWide -ne 'none') {
-            throw "an over-wide block art drew '$overWide', expected the frame alone"
-          }
+            $src.Replace('$room = $cols -', '$room = 61 -')
+          Assert-Preview 'art wider than the room' (Get-PreviewBranch -BlockArt -Script $wideArtProbe) '--logo none'
           Set-Content -LiteralPath $artFile -Value 'art' -NoNewline
 
           # Nothing to draw with at all: fastfetch's own ASCII logo.
           Remove-Item -LiteralPath $arts -Recurse -Force
           Remove-Item -LiteralPath $sixel -Force
-          $bare = Get-PreviewBranch
-          Write-Host "  no sixel, no art        -> $bare"
-          if ($bare -ne 'builtin') { throw "preview drew '$bare' with nothing to draw, expected 'builtin'" }
+          Assert-Preview 'no sixel, no art' (Get-PreviewBranch) '--logo Windows11'
 
           # A window too narrow for the logo beside the frame: the logo has to go,
           # and the frame is drawn alone. Drawing the picture anyway is exactly
@@ -531,12 +635,8 @@ jobs:
           $narrow = Join-Path $env:TEMP 'preview-probe-narrow.ps1'
           Set-Content -LiteralPath $sixel -Value 'x' -NoNewline
           Set-Content -LiteralPath $narrow -Value `
-            $src.Replace('$ffRoom = $ffCols -', '$ffRoom = 0 -')
-          $tight = Get-PreviewBranch -Script $narrow
-          Write-Host "  window too narrow       -> $tight"
-          if ($tight -ne 'none') {
-            throw "a window too narrow for the logo drew '$tight', expected the frame alone"
-          }
+            $src.Replace('$room = $cols -', '$room = 0 -')
+          Assert-Preview 'window too narrow' (Get-PreviewBranch -Script $narrow) '--logo none'
 
           # The preview must leave the window the size Windows Terminal opened it
           # at. Resizing the console host does work, but Windows Terminal
@@ -550,6 +650,61 @@ jobs:
             throw 'preview.ps1 resizes the window; that rewrites the size of every later terminal'
           }
           Write-Host 'preview ok (file payload; branches pinned; window size untouched)'
+
+      # The preview window is the one a user resizes on purpose, so a torn logo
+      # there is the most visible version of this bug. It carries the same guard
+      # (shared verbatim with the launcher), and this pins the repair end to end -
+      # including the block-art branch, whose logo has to be *measured* by a
+      # function call made after the script's own scope is gone.
+      - name: The preview window repairs itself after a resize
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:USERPROFILE '.config\fastfetch'
+          foreach ($d in 'themes', 'gui', 'arts') {
+            New-Item -ItemType Directory -Path (Join-Path $root $d) -Force | Out-Null
+          }
+          Set-Content -LiteralPath (Join-Path $root 'themes\theme-01.jsonc') -Value '{"modules":[]}'
+          # image_path '' below, so art_key() gives the fallback name 'img'.
+          Set-Content -LiteralPath (Join-Path $root 'arts\img.art') -Value 'art' -NoNewline
+          python -c "import app; app.write_preview_script({'logWidth':28,'logHeight':24,'gallery':[]}, '')"
+          $script = Join-Path $root 'gui\preview.ps1'
+          if (-not (Test-Path -LiteralPath $script)) { throw 'no preview.ps1 was generated' }
+          $bin = Join-Path $env:USERPROFILE '.local\bin'
+          New-Item -ItemType Directory -Path $bin -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $bin 'fastfetch.exe') -Value '' -NoNewline
+
+          # No sixel - Pillow missing on the user's machine, say - so the block
+          # art is the logo, and drawing it again means measuring it again.
+          $log = Join-Path $env:TEMP 'preview-resize-log.txt'
+          $env:FF_LOG = $log
+          $probe = Join-Path $env:TEMP 'preview-resize-probe.ps1'
+          $src = Get-Content -LiteralPath $script -Raw
+          if ($src -notmatch 'Install-FFSResizeGuard') { throw 'preview.ps1 has no resize guard' }
+          $src = $src.Replace('$c = [int][Console]::WindowWidth; $r = [int][Console]::WindowHeight',
+                              '$c = 120; $r = 40')
+          $src = $src.Replace('& $Plan.Exe @a',
+                              "Add-Content -LiteralPath `$env:FF_LOG -Value (`$a -join ' ')")
+          $src = $src.Replace('try { [Console]::Clear() } catch { }',
+                              "Add-Content -LiteralPath `$env:FF_LOG -Value 'erase'")
+          # The resize: only the size polled after the first draw changes.
+          $src += "`nfunction global:Get-FFSGrid { return @(61, 30) }`n"
+          Set-Content -LiteralPath $probe -Value $src
+
+          Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+          $out = & $probe *>&1
+          $null = prompt
+          $lines = @(Get-Content -LiteralPath $log)
+          $draws = @($lines | Where-Object { $_ -match '--logo' })
+          Write-Host "  after a resize -> $($draws -join ' | ')"
+          if ($draws.Count -ne 2) { throw "the preview did not repair itself: $($lines -join ' | ')" }
+          if ($draws[0] -notmatch 'img\.art') { throw "the preview drew the wrong logo first: $($draws[0])" }
+          if (-not ($lines | Where-Object { $_ -eq 'erase' })) {
+            throw 'the preview drew over the torn copy instead of erasing it'
+          }
+          if (@($out | Where-Object { $_ -match 'close this window' }).Count -ne 1) {
+            throw 'the repair repeated the closing line'
+          }
+          Write-Host 'preview resize ok (art logo re-measured after the script scope was gone)'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

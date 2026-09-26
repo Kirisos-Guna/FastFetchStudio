@@ -197,6 +197,14 @@ to `image` or `builtin` for a single shell. Also check that your Windows Termina
 `settings.json` doesn't launch PowerShell with `-NoProfile`, which skips the profile entirely
 — the script warns you if it spots this.
 
+**The logo comes apart when I go fullscreen (Alt+Enter), or after any resize.**
+Alt+Enter is Windows Terminal's `toggleFullscreen`, and a resize reflows the text under the image:
+the picture is anchored to the cells it was drawn over and cannot follow. The launcher
+redraws the same fetch at the new size as soon as the prompt comes back, so press Enter (or run
+`Redraw-Fetch`) and the picture is whole again; the *Random* tab switch **Re-draw the fetch when the
+window is resized** turns that off. See the README's *Alt+Enter (or any resize) tears the logo into
+bands* for the terminal-side workarounds.
+
 **The fetch is printed twice, in two colour schemes.**
 Your profile has two fastfetch calls — `setup.ps1`'s managed block, and the documented snippet
 pasted in afterwards without removing it. Each call picks its own random theme, so you get two

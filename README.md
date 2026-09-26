@@ -36,14 +36,16 @@ options, verification, and uninstall.
   default logo size, palette-block toggle.
 - **Random tab** — choose what randomizes per terminal open (logo, theme), how often
   (every window or once per day), and how the logo is drawn (auto / always draw the image /
-  built-in ASCII only).
-- **Live preview** — renders the logo to a real sixel image and opens it in a Windows
-  Terminal window, with the same theme and module list the launcher will draw. The window stays
+  built-in ASCII only). Also whether the fetch redraws itself when the window is resized, which is
+  what keeps the image whole after Alt+Enter — see
+  [Alt+Enter (or any resize) tears the logo into bands](#altenter-or-any-resize-tears-the-logo-into-bands).- **Live preview** — renders the logo to a real sixel image and opens it in a Windows Terminal
+  window, with the same theme and module list the launcher will draw. The window stays
   open until you close it, so the fetch does not flash past. It opens at whatever size Windows
-  Terminal last used, and a narrow one will wrap the fetch over the logo — resize the window and
-  click **Preview in terminal** again. The app deliberately does not resize your terminal for
-  you: Windows Terminal remembers the last window size, so doing that would change the width of
-  every terminal you open afterwards.
+  Terminal last used, and resizing it redraws the fetch at the new size — the logo is re-fitted to
+  the room the frame leaves, the same way the real shell does it (see
+  [Alt+Enter tears the logo](#altenter-or-any-resize-tears-the-logo-into-bands)). The app
+  deliberately does not resize your terminal for you: Windows Terminal remembers the last window
+  size, so doing that would change the width of every terminal you open afterwards.
 - **8 palettes** — your exact colors plus 7 hue-rotated variants are generated so
   randomization has variety.
 - **An icon on every row** — the generated config switches fastfetch's key icons on, so all
@@ -59,7 +61,7 @@ options, verification, and uninstall.
 |---|---|
 | `~\.config\fastfetch\config.jsonc` | main fastfetch config (original backed up once to `config.backup.jsonc`) |
 | `~\.config\fastfetch\themes\theme-01..08.jsonc` | the 8 palettes |
-| `~\.config\fastfetch\fastfetch-random.ps1` | picks a random theme + logo each run, and draws once per shell session. It detects the terminal first — sixel on Windows Terminal (1.22+), WezTerm, foot, contour, mlterm, yaft; the kitty protocol on kitty, WezTerm and Ghostty; block art from `arts\` anywhere else; fastfetch's tinted ASCII logo as the last resort. Written by **Apply & Generate**; `setup.ps1` writes a plain bootstrap here so the profile hook works before the app has ever run |
+| `~\.config\fastfetch\fastfetch-random.ps1` | picks a random theme + logo each run, draws once per shell session, and redraws that same fetch when the window changes size (see [Alt+Enter tears the logo](#altenter-or-any-resize-tears-the-logo-into-bands)). It detects the terminal first — sixel on Windows Terminal (1.22+), WezTerm, foot, contour, mlterm, yaft; the kitty protocol on kitty, WezTerm and Ghostty; block art from `arts\` anywhere else; fastfetch's tinted ASCII logo as the last resort. Written by **Apply & Generate**; `setup.ps1` writes a plain bootstrap here so the profile hook works before the app has ever run |
 | `~\.config\fastfetch\arts\*.art` | your logos pre-rendered as truecolour block art, for terminals that can display no image protocol |
 | `~\.config\fastfetch\gui\studio-state.json` | app state (gallery, colors, settings) |
 | `~\.config\fastfetch\gui\preview.ps1` | the payload the **Preview in terminal** button runs; regenerated on every click |
@@ -179,6 +181,55 @@ characters counted back out of the console screen buffer:
 
 A window narrower than the frame itself (46 columns) will still clip the frame's right corner:
 the frame is a fixed rule baked into the themes, and there is nothing left to give.
+
+### Alt+Enter (or any resize) tears the logo into bands
+
+Fixed in v1.1.15. Before that the launcher drew once, at shell start, and never again — so a
+resize left the torn picture on screen until a new terminal was opened.
+
+Alt+Enter is Windows Terminal's `toggleFullscreen`, and going fullscreen changes the window's
+*grid* — both its columns and its rows. The logo is a real image, rasterized into the terminal
+buffer at the shape it had when fastfetch ran and anchored to the cells it was drawn over, so when
+the grid changes the terminal reflows the text around it and the picture comes apart into bands,
+leaving slivers of the frame's own rows interleaved with slices of the image. F11, dragging the
+window edge and Ctrl+scroll zooming the font all do the same thing. The fetch's *text* is fine — it
+is only the image that cannot follow a reflow.
+
+Nothing running in the terminal can react while that happens: Windows has no `SIGWINCH`, and the
+only console signal it does have (`WINDOW_BUFFER_SIZE_EVENT`) has to be read out of the input
+buffer, which PSReadLine owns. So the launcher notices afterwards instead. The prompt compares the
+grid the fetch was drawn at with the grid now, and when they differ it erases the torn copy — an
+image cannot be taken out of the buffer any other way than by clearing the cells it covers — and
+draws the same fetch again: same theme, same picture, re-fitted to the new window.
+
+- **On by default.** *Random* tab → **Re-draw the fetch when the window is resized**. With it off,
+  a resized window keeps the torn picture until a new terminal is opened. Either way only the
+  visible screen is erased; the scrollback above it is left alone.
+- **The repair lands at the next prompt** — press Enter, or let a command finish. For the
+  impatient, `Redraw-Fetch` in that shell does it immediately; the generated launcher defines it,
+  so it is there whenever the fetch is.
+- **The preview window repairs itself too**, so the window you resize while testing behaves like the
+  real one.
+- **A resize never re-randomizes.** It redraws the theme and picture that shell already had, so a
+  resized window cannot suddenly look like a different machine.
+
+If the picture is still wrong *after* a redraw at the new size, the tear was not the buffer at all
+but Windows Terminal's DirectX renderer — a known problem on some Intel GPUs when entering and
+leaving fullscreen ([microsoft/terminal#14865](https://github.com/microsoft/terminal/issues/14865)).
+Update Windows Terminal and your GPU driver, and if it persists add this to your Windows Terminal
+`settings.json`:
+
+```json
+"experimental.rendering.forceFullRepaint": true
+```
+
+If you would rather not have Alt+Enter change the window size at all — it is the easiest of those
+gestures to hit by accident — unbind it in Windows Terminal's `settings.json` (`actions`), leaving
+fullscreen on F11:
+
+```json
+{ "command": "unbound", "keys": "alt+enter" }
+```
 
 ### The fetch prints twice, in two different colours
 
