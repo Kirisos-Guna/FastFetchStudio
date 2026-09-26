@@ -43,12 +43,13 @@ except ImportError:
     HAVE_PIL = False
 
 try:
-    from sixel_codec import (ALPHA_THRESHOLD, decode_sixel_pixels,
+    from sixel_codec import (ALPHA_THRESHOLD, CELL_PX_DEFAULT, decode_sixel_pixels,
                              encode_sixel, fit_image_cells, quantize_rgb,
                              render_ansi_art)
     HAVE_SIXEL = True
 except Exception:
     HAVE_SIXEL = False
+    CELL_PX_DEFAULT = (10, 20)
 
 # --------------------------------------------------------------------------- paths
 USER = Path(os.environ.get("USERPROFILE", str(Path.home())))
@@ -64,6 +65,9 @@ PREVIEW_CACHE = GUI_DIR / "preview.sixel"
 # The Preview button's payload. It is a generated file rather than a
 # `powershell -Command "..."` one-liner for a reason - see PREVIEW_TEMPLATE.
 PREVIEW_SCRIPT = GUI_DIR / "preview.ps1"
+# The Random tab's "Measure terminal" payload, plus the probe images it draws to
+# learn how many rows - and therefore how many pixels - one cell is worth.
+MEASURE_SCRIPT = GUI_DIR / "measure-cells.ps1"
 SIXELS_DIR = FF_DIR / "sixels"
 # Block-art logos for terminals that cannot display an image protocol at all.
 ARTS_DIR = FF_DIR / "arts"
@@ -93,6 +97,52 @@ BOX_WIDTH_MAX = 64
 # window - frame - 1 - this. Forgetting it is what clipped the frame's last
 # three columns beside the logo even though the arithmetic "fitted".
 LOGO_GAP = 4
+
+# --------------------------------------------------------------------------- logo cells
+#
+# The logo tearing into bands had one root cause, and it was ours: a sixel is
+# placed by its *raster* size (pixels), while --logo-width/--logo-height only
+# tell fastfetch how many cells it thinks the picture occupies. The app wrote
+# 10x20 px per cell into every .sixel and then handed fastfetch whatever cell
+# count the window happened to leave room for - two numbers that had no reason
+# to agree, and did not. The picture is 28x24 cells of pixels; when fastfetch
+# was told 10x9, its text was laid out where the picture still is, and Windows
+# Terminal reacts to text written over a sixel by redrawing the image in
+# bands (the alpha-blended rows come back as strips). Scrolling the old picture
+# away and redrawing - the v1.1.15 repair - made it worse, because [Console]
+# ::Clear() does not remove a sixel image at all: the repair left the torn
+# picture on screen and painted a second one over it.
+#
+# So the size is now derived instead of assumed: the raster is the truth, the
+# cell count is read back out of it, and both come from the terminal's real
+# cell size when it has been measured (Random tab -> "Measure terminal").
+# `sixels\*.sixel` is written as cells_w x cells_h cells of exactly this size.
+METRICS_PATH = GUI_DIR / "term-metrics.json"
+# Room for the text beside the picture: the picture is drawn one column
+# narrower than the cell count fastfetch is told about, so no glyph can ever
+# land in the picture's columns even if the terminal rounds the image's width
+# up a cell.
+LOGO_SLACK_COLS = 1
+
+# The picture is pre-encoded at a ladder of sizes, largest first, so a window
+# that cannot hold the full size still gets the *same picture* smaller - instead
+# of a lie about the full one. That lie is the everyday half of this bug: on a
+# 1440x900 screen a terminal snapped to half the width is 70 columns, the frame
+# takes 45 of them, so 21 are left for a picture that needs 28. v1.1.15 handed
+# fastfetch `--logo-width 21`, fastfetch then wrote its text from column 25 - and
+# the picture is drawn where it always was, over columns 0..27. Text inside a
+# sixel's own cells is what makes Windows Terminal redraw the image in bands,
+# which is exactly what the screenshots showed: a logo with glyphs punched
+# through it. Choosing a smaller file keeps the one invariant - raster size ==
+# cells x cell size - that the numbers have to agree on.
+#
+# Measured on this machine (Windows Terminal 1.24, 2880x1800 at 200%):
+#   70x42 window -> room 21 columns -> the 20x17 variant, text starts at column 24
+#   180x42 window -> the full 28x24 picture, text starts at column 32
+# The smallest step is what still reads as a picture; below that the block-art
+# render (pure text, which cannot tear) takes over.
+LOGO_LADDER = (1.0, 0.86, 0.72, 0.58, 0.44)
+LOGO_MIN_CELLS = (10, 8)
 BORDER_CHARS = set("\u2500\u2501\u2550-\u250c\u2510\u2514\u2518\u2554\u2557\u255a\u255d"
                    "\u250f\u2513\u2517\u251b+ ")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -132,6 +182,14 @@ DEFAULT_STATE = {
     # Windows, so the prompt notices it and redraws. Erasing the torn copy is
     # what makes the repair visible, which is why this can be turned off.
     "redrawOnResize": True,
+    # Pixel size of one terminal cell, as measured in the user's own terminal
+    # (gui/term-metrics.json, Random tab -> "Measure terminal"). The encoder
+    # writes sixels this size and the launcher reads the cell count back out of
+    # them, so a measured value makes the picture land on whole cells. The
+    # default is the size the files were built with before measuring existed.
+    "cellW": CELL_PX_DEFAULT[0],
+    "cellH": CELL_PX_DEFAULT[1],
+    "cellSource": "default",
 }
 
 GROUPS = [
@@ -210,6 +268,18 @@ def load_state() -> dict:
                 st.update(data)
         except Exception:
             pass
+    # The measured cell size wins over whatever the state file remembers: it is
+    # the size the sixels in sixels\ were actually encoded for, and the size the
+    # launcher will read back out of them. Read inline rather than through
+    # load_metrics(): this runs at import time, before that function exists.
+    try:
+        m = json.loads(METRICS_PATH.read_text("utf-8"))
+        cw = int(m.get("cellW", 0)); ch = int(m.get("cellH", 0))
+        if 4 <= cw <= 80 and 6 <= ch <= 160:
+            st["cellW"], st["cellH"] = cw, ch
+            st["cellSource"] = str(m.get("source", "measured"))
+    except Exception:
+        pass
     return st
 
 
@@ -495,10 +565,19 @@ RESIZE_GUARD_TEMPLATE = r"""# --- keep the fetch straight when the window is res
 # fetch again at the new size.
 function global:Repair-FFSFetch {
     param([hashtable]$Plan)
-    # Erase the viewport first: an image lives in the cells it was drawn over, so
-    # clearing them is what takes the torn copy away. Only the visible screen
-    # goes - the scrollback above it is left alone.
+    # Take the torn copy off the screen before drawing a new one - and for a
+    # sixel that means *scrolling it away*, not clearing. Measured on Windows
+    # Terminal 1.24: [Console]::Clear() and CSI 2J both leave a sixel image
+    # sitting on the screen (it lives in its own layer, not in the text
+    # buffer), while scrolling the lines it was drawn on out of the viewport
+    # removes it completely. v1.1.15 cleared first, so every resize left the
+    # broken picture behind and painted another one over it - which is exactly
+    # the banded, doubled logo the repair was supposed to fix.
+    $rows = [int]$Plan.Rows
+    if ($rows -le 0) { $rows = 40 }
+    [Console]::Write(("`n" * ($rows + 2)))
     try { [Console]::Clear() } catch { }
+    [Console]::Write("`e[3J`e[1;1H")
     Show-FFSFetch -Plan $Plan
 }
 
@@ -598,8 +677,10 @@ if (-not $ffExe) {
 }
 
 $themes = @(Get-ChildItem -LiteralPath (Join-Path $ffRoot 'themes') -Filter 'theme-*.jsonc' -File -ErrorAction SilentlyContinue)
-$sixels = @(Get-ChildItem -LiteralPath (Join-Path $ffRoot 'sixels') -Filter '*.sixel' -File -ErrorAction SilentlyContinue)
-$arts   = @(Get-ChildItem -LiteralPath (Join-Path $ffRoot 'arts') -Filter '*.art' -File -ErrorAction SilentlyContinue)
+$sixels = @(Get-ChildItem -LiteralPath (Join-Path $ffRoot 'sixels') -Filter '*.sixel' -File -ErrorAction SilentlyContinue |
+           Where-Object { $_.BaseName -notmatch '-\d+x\d+$' })     # the ladder, not the pictures
+$arts   = @(Get-ChildItem -LiteralPath (Join-Path $ffRoot 'arts') -Filter '*.art' -File -ErrorAction SilentlyContinue |
+           Where-Object { $_.BaseName -notmatch '-\d+x\d+$' })
 $pngDirs = @((Join-Path $ffRoot 'pngs'), (Join-Path $ffRoot 'images'))
 $pngs    = @($pngDirs | ForEach-Object { Get-ChildItem -LiteralPath $_ -Filter '*.png' -File -Recurse -ErrorAction SilentlyContinue } | Sort-Object FullName -Unique)
 $statePath = Join-Path $ffRoot 'gui\studio-state.json'
@@ -693,6 +774,41 @@ function global:Get-TextLogoWidth {
     return $widest
 }
 
+function global:Get-FFSCellPx {
+    # Pixel size of one cell, as the sixels in sixels\ were encoded for: the
+    # terminal's measured size when it has one, the encoder's default otherwise.
+    # Baked in at Apply time, so the launcher and the encoder can never drift.
+    param([hashtable]$Plan)
+    $cw = @@CELLW@@
+    $ch = @@CELLH@@
+    if ($Plan -and [int]$Plan.CellW -gt 0 -and [int]$Plan.CellH -gt 0) {
+        $cw = [int]$Plan.CellW
+        $ch = [int]$Plan.CellH
+    }
+    if ($cw -le 0) { $cw = 10 }
+    if ($ch -le 0) { $ch = 20 }
+    return @($cw, $ch)
+}
+
+function global:Get-FFSRasterSize {
+    # The pixel size a sixel declares in its raster attributes ("1;1;W;H), which
+    # is the size the terminal places it at. 0,0 when the file is missing or is
+    # not a sixel, and the caller then draws no logo rather than guess one.
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @(0, 0) }
+    try {
+        $fs = [IO.File]::OpenRead($Path)
+        try {
+            $head = New-Object byte[] 64
+            $n = $fs.Read($head, 0, 64)
+        } finally { $fs.Dispose() }
+        $txt = -join ($head[0..([Math]::Max(0, $n - 1))] | ForEach-Object { [char]$_ })
+        $m = [Text.RegularExpressions.Regex]::Match($txt, '"1;1;(\d+);(\d+)')
+        if ($m.Success) { return @([int]$m.Groups[1].Value, [int]$m.Groups[2].Value) }
+    } catch { }
+    return @(0, 0)
+}
+
 # --- can this terminal draw an image, and how? ------------------------------
 # Sending image bytes to a terminal that cannot render them prints garbage, so
 # capability is detected rather than assumed. Getting this list wrong is what
@@ -751,6 +867,59 @@ if ($ffLogoMode -eq 'builtin') {
 # Everything the draw needs is read from $global:FFSPlan rather than from this
 # script's variables, because the launcher is a script: its scope is gone by the
 # time the resize guard redraws at the next prompt.
+function global:Get-FFSLogoFit {
+    # The largest pre-encoded size of this picture the window can hold, as a
+    # hashtable of W, H, Path and Px - or $null when even the smallest does not
+    # fit.
+    #
+    # Every size in the ladder was encoded from the same image against the
+    # terminal's measured cell size, so a variant's raster is exactly its cell
+    # box. Picking a file keeps that true; rewriting --logo-width to whatever the
+    # window allowed (what v1.1.15 did) broke it, and the fetch's text then
+    # landed in the picture's own columns - which is what the terminal reacts to
+    # by redrawing the picture in bands.
+    #
+    # Rows matter as much as columns: a 24-row picture in a 20-row window can
+    # only be drawn by scrolling, and a scrolled sixel is exactly the torn one.
+    param([string]$Path, [string]$Dir, [hashtable]$Plan, [int]$Room, [int]$Rows)
+    if (-not $Path -or -not $Dir) { return $null }
+    $cell = Get-FFSCellPx -Plan $Plan
+    $base = [IO.Path]::GetFileNameWithoutExtension($Path)
+    $files = @(Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue)
+    $files += @(Get-ChildItem -LiteralPath $Dir -Filter ($base + '-*x*.sixel') -File -ErrorAction SilentlyContinue)
+    $best = $null
+    foreach ($f in $files) {
+        $px = @(Get-FFSRasterSize -Path $f.FullName)
+        if ($px[0] -le 0 -or $px[1] -le 0) { continue }
+        $w = [int][Math]::Ceiling($px[0] / [double]$cell[0])
+        $h = [int][Math]::Ceiling($px[1] / [double]$cell[1])
+        if ($w -gt $Room -or $h -gt $Rows) { continue }
+        if ($null -eq $best -or ($w * $h) -gt ([int]$best.W * [int]$best.H)) {
+            $best = @{ W = $w; H = $h; Path = $f.FullName; Px = $px }
+        }
+    }
+    return $best
+}
+
+function global:Get-FFSArtFit {
+    # The same choice for the block-art ladder: a text logo cannot tear, so it is
+    # what a window too narrow or too short for the picture gets. The size is in
+    # the name, written by the encoder from the very cells it rendered.
+    param([string]$Path, [string]$Dir, [int]$Room, [int]$Rows)
+    if (-not $Path -or -not $Dir) { return $null }
+    $base = [IO.Path]::GetFileNameWithoutExtension($Path)
+    $best = $null
+    foreach ($f in @(Get-ChildItem -LiteralPath $Dir -Filter ($base + '-*x*.art') -File -ErrorAction SilentlyContinue)) {
+        if ($f.BaseName -notmatch '-(\d+)x(\d+)$') { continue }
+        $w = [int]$Matches[1]; $h = [int]$Matches[2]
+        if ($w -gt $Room -or $h -gt $Rows) { continue }
+        if ($null -eq $best -or ($w * $h) -gt ([int]$best.W * [int]$best.H)) {
+            $best = @{ W = $w; H = $h; Path = $f.FullName }
+        }
+    }
+    return $best
+}
+
 function global:Get-FFSGrid {
     # The current grid as @(columns, rows). There is no resize event to
     # subscribe to on Windows - ReadConsoleInput's WINDOW_BUFFER_SIZE_EVENT is
@@ -791,8 +960,12 @@ function global:Show-FFSFetch {
     # the frame is there: when the terminal is narrower than the pair it wraps
     # the line, the frame's border lands on the next row and the whole fetch
     # falls apart - which is what a small screen or a tiled window looked like.
-    # Give the logo only what is left after the frame, and scale it with the
-    # space, so the fetch fits whatever window it lands in.
+    # Give the logo only what is left after the frame. That used to mean
+    # rewriting --logo-width/--logo-height with whatever the window allowed,
+    # which is a lie: those two flags only say how many cells the picture
+    # occupies, so the picture stayed where it was and the text was laid out on
+    # top of it. The size now comes from the file (Get-FFSRasterSize) and a
+    # window too narrow for it gets the block art instead.
     #
     # @@LOGOGAP@@ of those columns are fastfetch's own logo padding, which sits
     # between the logo and the text and is easy to forget: without reserving it
@@ -803,39 +976,90 @@ function global:Show-FFSFetch {
     if ([int]$grid[0] -gt 0) { $Plan.Grid = @([int]$grid[0], [int]$grid[1]) }
     $cols = [int]$Plan.Grid[0]
     if ($cols -le 0) { $cols = 80 }
+    $rows = [int]$Plan.Grid[1]
+    if ($rows -le 0) { $rows = 24 }
+    # How far the repair has to scroll to be rid of the picture - the whole
+    # window is clearer than a few lines, and it is what takes a sixel off the
+    # screen (clearing the text buffer does not).
+    $Plan.Rows = $rows
+    # One row is left for the prompt: a picture on the last row is only kept by
+    # scrolling, and a scrolled sixel is the torn one.
+    $rowRoom = $rows - 1
     $room = $cols - [int]$Plan.Band - 1 - [int]$Plan.Gap
-    $w = [int]$Plan.W
-    $h = [int]$Plan.H
-    if ($w -gt $room) {
-        if ($room -lt 10) {
-            $w = 0      # narrower than this is a smudge, not a logo - draw none
-        } else {
-            $h = [int][Math]::Round($h * $room / [double]$w)
-            if ($h -lt 4) { $h = 4 }
-            $w = $room
-        }
-    }
     $logo = @()
     $retry = @()
-    if ($w -le 0) {
-        # No room for a picture beside the frame. Drawing one anyway is exactly
-        # what wrapped the fetch over itself, so draw the frame on its own.
-        $logo = @('--logo', 'none')
-    } elseif ($Plan.Kind -eq 'sixel') {
-        # 'raw' passes the pre-encoded bytes straight through; width/height tell
-        # fastfetch the cell size so the fetch is drawn beside (not below) the
-        # image.
-        $logo  = @('--logo-type', 'raw', '--logo', $Plan.Logo, '--logo-width', $w, '--logo-height', $h)
-        $retry = @('--logo', 'Windows11')
-    } elseif ($Plan.Kind -eq 'kitty') {
-        $logo  = @('--logo-type', 'kitty-direct', '--logo', $Plan.Logo, '--logo-width', $w, '--logo-height', $h)
-        $retry = @('--logo', 'Windows11')
+    $w = 0
+    $h = 0
+    if ($Plan.Kind -eq 'sixel' -or $Plan.Kind -eq 'kitty') {
+        # Which *file* to draw, and what to tell fastfetch about it.
+        #
+        # A sixel is placed by its raster size, so the picture's cell count is
+        # read out of the file that is about to be drawn and passed on unchanged:
+        # --logo-width does not scale an image, it only says how much room to
+        # leave beside it, and a number that disagrees with the raster is what
+        # tore the logo in the first place.
+        #
+        # Fitting therefore means picking a smaller file, not rewriting the size.
+        # The ladder holds the same picture encoded at several cell sizes; the
+        # largest one this window can hold wins.
+        $fit = $null
+        if ($Plan.Kind -eq 'sixel') {
+            $fit = Get-FFSLogoFit -Path $Plan.Logo -Dir $Plan.SixelsDir `
+                                  -Plan $Plan -Room $room -Rows $rowRoom
+        } else {
+            $cell = Get-FFSCellPx -Plan $Plan
+            $px = @(Get-FFSRasterSize -Path $Plan.Logo)
+            if ($px[0] -gt 0 -and $px[1] -gt 0) {
+                $w = [int][Math]::Ceiling($px[0] / [double]$cell[0])
+                $h = [int][Math]::Ceiling($px[1] / [double]$cell[1])
+            }
+            if ($w -gt 0 -and $w -le $room -and $h -le $rowRoom) {
+                $fit = @{ W = $w; H = $h; Path = $Plan.Logo }
+            }
+        }
+        if (-not $fit) {
+            # Nothing in the ladder fits. The block art is the same picture at
+            # block resolution - pure text, so it cannot tear - and when even
+            # that is too wide the frame is drawn on its own.
+            $w = 0
+            $art = Get-FFSArtFit -Path $Plan.Art -Dir $Plan.ArtsDir -Room $room -Rows $rowRoom
+            if ($art) {
+                $logo = @('--logo', $art.Path)
+            } elseif ($Plan.Art -and (Get-TextLogoWidth -Path $Plan.Art) -le $room) {
+                $logo = @('--logo', $Plan.Art)
+            } else {
+                $logo = @('--logo', 'none')
+            }
+        } elseif ($Plan.Kind -eq 'sixel') {
+            $w = [int]$fit.W
+            $h = [int]$fit.H
+            # 'raw' passes the pre-encoded bytes straight through.
+            # --logo-print-remaining false because fastfetch otherwise pads the
+            # logo out to logo-height lines when the key list is shorter than
+            # the picture, and those blank lines are written over the picture's
+            # own rows - the other half of the banding.
+            $logo  = @('--logo-type', 'raw', '--logo', $fit.Path,
+                       '--logo-width', $w, '--logo-height', $h,
+                       '--logo-print-remaining', 'false')
+            $retry = @('--logo', 'Windows11')
+        } else {
+            $w = [int]$fit.W
+            $h = [int]$fit.H
+            $logo  = @('--logo-type', 'kitty-direct', '--logo', $fit.Path,
+                       '--logo-width', $w, '--logo-height', $h)
+            $retry = @('--logo', 'Windows11')
+        }
     } elseif ($Plan.Kind -eq 'art') {
         # fastfetch prints a *text* logo file verbatim - --logo-width has no
         # effect on it - so the block art is drawn only when it fits, and
         # nothing is drawn when it does not rather than fall back to a *wider*
         # logo: the built-in ASCII one is 40 columns and would be worse.
-        if ((Get-TextLogoWidth -Path $Plan.Logo) -le $room) { $logo = @('--logo', $Plan.Logo) }
+        #
+        # The art ladder is tried first, so a narrow window gets a smaller
+        # render of the same picture instead of nothing.
+        $art = Get-FFSArtFit -Path $Plan.Logo -Dir $Plan.ArtsDir -Room $room -Rows $rowRoom
+        if ($art) { $logo = @('--logo', $art.Path) }
+        elseif ((Get-TextLogoWidth -Path $Plan.Logo) -le $room) { $logo = @('--logo', $Plan.Logo) }
         else { $logo = @('--logo', 'none') }
     } else {
         $logo = @('--logo', 'Windows11')    # the built-in tinted ASCII logo
@@ -855,6 +1079,25 @@ function global:Show-FFSFetch {
         $ffRetry += $Plan.Fit
     }
     Invoke-FFSRun -Plan $Plan -FFArgs $ffArgs -FFRetry $ffRetry
+    # What this draw actually did: the window it found, the room it had, the file
+    # it chose and the size it told fastfetch. Written every time, so "my logo is
+    # missing" (or smaller than it used to be) can be explained from a file
+    # instead of from a screenshot - and so a test can check the choice without
+    # reading pixels.
+    try {
+        $pick = 'none'
+        if ($logo.Count -gt 1) { $pick = [IO.Path]::GetFileName([string]$logo[1]) }
+        $how = 'none'
+        if ($w -gt 0) { $how = 'picture' }
+        elseif ($pick -like '*.art') { $how = 'block art' }
+        Set-Content -LiteralPath (Join-Path $Plan.GuiDir 'last-draw.txt') -Encoding UTF8 -Value @(
+            ('when  : ' + (Get-Date).ToString('s')),
+            ('window: ' + $cols + ' x ' + $rows + ' cells'),
+            ('room  : ' + $room + ' columns, ' + $rowRoom + ' rows'),
+            ('drawn : ' + $how + ' (' + $pick + ')'),
+            ('cells : ' + $(if ($w -gt 0) { '' + $w + ' x ' + $h } else { '-' }))
+        )
+    } catch { }
     # Say why the picture is missing - but only when one was clearly expected (a
     # pinned image with randomisation off), the same condition the fallback note
     # below uses. Otherwise every narrow window would print this, and that
@@ -885,6 +1128,9 @@ function global:Show-FFSFetch {
 # fastfetch's tinted ASCII logo is the last resort.
 $ffKind = 'builtin'
 $ffLogoPath = ''
+# The block-art render of the same picture. It is what a window too narrow for
+# the sixel gets: pure text, so it cannot be drawn wrong.
+$ffArtPath = ''
 if ($wantImage -and $ffSixel -and $sixels.Count -gt 0) {
     $six = $null
     if (-not $randLogo) {
@@ -901,6 +1147,8 @@ if ($wantImage -and $ffSixel -and $sixels.Count -gt 0) {
         $six = Get-Random -InputObject $sixels
     }
     $ffKind = 'sixel'; $ffLogoPath = $six.FullName
+    $artCand = Join-Path (Join-Path $ffRoot 'arts') ($six.BaseName + '.art')
+    if (Test-Path -LiteralPath $artCand) { $ffArtPath = $artCand }
 } elseif ($wantImage -and $ffKitty -and $pngs.Count -gt 0) {
     $png = $null
     if (-not $randLogo -and $defaultImg -and (Test-Path -LiteralPath $defaultImg)) {
@@ -925,7 +1173,7 @@ if ($wantImage -and $ffSixel -and $sixels.Count -gt 0) {
     } else {
         $art = Get-Random -InputObject $arts
     }
-    if ($art) { $ffKind = 'art'; $ffLogoPath = $art.FullName }
+    if ($art) { $ffKind = 'art'; $ffLogoPath = $art.FullName; $ffArtPath = $art.FullName }
 }
 
 $colorArgs = @()
@@ -949,8 +1197,11 @@ $global:FFSPlan = @{
     Color      = $colorArgs
     Kind       = $ffKind
     Logo       = $ffLogoPath
+    Art        = $ffArtPath
     W          = $w
     H          = $h
+    CellW      = @@CELLW@@
+    CellH      = @@CELLH@@
     Band       = @@BOX@@
     Gap        = @@LOGOGAP@@
     WantImage  = $wantImage
@@ -959,6 +1210,13 @@ $global:FFSPlan = @{
     Host       = $ffHost
     Redraw     = $redrawOnResize
     Grid       = @(0, 0)
+    Rows       = 0
+    # Carried in the plan rather than read from the script scope inside
+    # Show-FFSFetch: the repair runs from the prompt, long after this script's
+    # own scope is gone, and a script-scoped path would be empty by then.
+    SixelsDir  = Join-Path $ffRoot 'sixels'
+    ArtsDir    = Join-Path $ffRoot 'arts'
+    GuiDir     = Join-Path $ffRoot 'gui'
 }
 
 @@RESIZEGUARD@@
@@ -989,6 +1247,8 @@ def generate_launcher(st: dict) -> None:
     LAUNCHER_PATH.parent.mkdir(parents=True, exist_ok=True)
     text = LAUNCHER_TEMPLATE.replace("@@W@@", str(int(st.get("logWidth", 28)))) \
                             .replace("@@H@@", str(int(st.get("logHeight", 24)))) \
+                            .replace("@@CELLW@@", str(logo_cell_px(st)[0])) \
+                            .replace("@@CELLH@@", str(logo_cell_px(st)[1])) \
                             .replace("@@BOX@@", str(frame_width(st))) \
                             .replace("@@LOGOGAP@@", str(LOGO_GAP)) \
                             .replace("@@REDRAW@@", redraw_flag(st)) \
@@ -1065,8 +1325,76 @@ def apply_all(st: dict) -> str:
 # pre-encode each gallery image to a .sixel file and let fastfetch pass the
 # bytes straight through - the same approach as the original logo.sixel setup.
 
+def logo_cell_px(st: dict) -> tuple[int, int]:
+    """Pixel size of one terminal cell, as the sixels are encoded for.
+
+    Comes from gui/term-metrics.json when the terminal has been measured, and
+    from the encoder's own long-standing default otherwise. Both the encoding
+    (encode_sixels) and the launcher's read-back (--logo-width from the raster)
+    use this one number, which is what keeps the picture and the text that sits
+    beside it from disagreeing.
+    """
+    try:
+        cw = int(st.get("cellW", CELL_PX_DEFAULT[0]))
+        ch = int(st.get("cellH", CELL_PX_DEFAULT[1]))
+    except (TypeError, ValueError):
+        return CELL_PX_DEFAULT
+    if not (4 <= cw <= 80) or not (6 <= ch <= 160):
+        return CELL_PX_DEFAULT
+    return (cw, ch)
+
+
+def ladder_cells(cells_w: int, cells_h: int) -> list[tuple[int, int]]:
+    """The cell sizes one picture is encoded at, largest first.
+
+    Fractions rather than fixed numbers, so the ladder follows whatever logo
+    size the user configured, and whole cells because that is the unit both
+    fastfetch and the terminal count in. Duplicates are dropped: a small logo
+    would otherwise produce the same variant twice.
+    """
+    out: list[tuple[int, int]] = []
+    for f in LOGO_LADDER:
+        w = max(LOGO_MIN_CELLS[0], int(round(cells_w * f)))
+        h = max(LOGO_MIN_CELLS[1], int(round(cells_h * f)))
+        if (w, h) not in out:
+            out.append((w, h))
+    return out
+
+
+def fit_logo_cells(im, cells_w: int, cells_h: int, st: dict):
+    """The picture on a `cells_w` x `cells_h` cell canvas, one column clear.
+
+    Two numbers matter here and they are not the same one:
+
+    * the **canvas** is exactly `cells_w` x `cells_h` cells, because that is
+      what the terminal reserves for the raster and what the launcher reads
+      back out of it - a smaller canvas leaves a hole, a bigger one is drawn
+      over the text beside it;
+    * the **picture** is fitted into `cells_w - LOGO_SLACK_COLS` columns, so at
+      least one empty column separates the last painted pixel from the first
+      glyph of the fetch text. fastfetch places that text at
+      `logo.width + logo.padding.right` and the terminal rounds the image's own
+      width up to whole cells; without the slack those two roundings can meet,
+      and text written into a sixel's cells is exactly what makes Windows
+      Terminal redraw the picture in bands.
+    """
+    cw, ch = logo_cell_px(st)
+    cells_w = max(1, int(cells_w))
+    cells_h = max(1, int(cells_h))
+    inner_w = max(1, cells_w - LOGO_SLACK_COLS)
+    inner = fit_image_cells(im, inner_w, cells_h, cell_px=(cw, ch))
+    canvas = Image.new("RGBA", (cells_w * cw, cells_h * ch), (0, 0, 0, 0))
+    canvas.alpha_composite(inner, (0, 0))
+    return canvas
+
+
 def ensure_sixels(st: dict) -> list[Path]:
-    """Encode every gallery image to sixels\\*.sixel (fastfetch consumes these)."""
+    """Encode every gallery image to sixels\\*.sixel (fastfetch consumes these).
+
+    Every file is cells_w x cells_h cells of the terminal's own cell size, so
+    the launcher can read the cell count straight back out of the raster
+    instead of guessing one.
+    """
     if not (HAVE_PIL and HAVE_SIXEL):
         return []
     SIXELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1081,11 +1409,15 @@ def ensure_sixels(st: dict) -> list[Path]:
             continue
         gw = int(g.get("w", cells_w)); gh = int(g.get("h", cells_h))
         key = re.sub(r"[^A-Za-z0-9]+", "-", src.stem).strip("-") or "img"
-        dst = SIXELS_DIR / f"{key}.sixel"
         try:
             with Image.open(src) as im:
-                dst.write_bytes(encode_sixel(fit_image_cells(im, gw, gh)))
-            written.append(dst)
+                for vw, vh in ladder_cells(gw, gh):
+                    # The configured size keeps the plain name: the state file and
+                    # older launchers look the picture up by <key>.sixel.
+                    name = f"{key}.sixel" if (vw, vh) == (gw, gh) else f"{key}-{vw}x{vh}.sixel"
+                    dst = SIXELS_DIR / name
+                    dst.write_bytes(encode_sixel(fit_logo_cells(im, vw, vh, st)))
+                    written.append(dst)
         except Exception:
             continue
     return written
@@ -1122,28 +1454,40 @@ def ensure_arts(st: dict) -> list[Path]:
         if not src.exists():
             continue
         gw = int(g.get("w", cells_w)); gh = int(g.get("h", cells_h))
-        dst = ARTS_DIR / f"{art_key(src)}.art"
         try:
             with Image.open(src) as im:
-                rows = render_ansi_art(im, gw, gh)
-            dst.write_text("\n".join(rows) + "\n", "utf-8", newline="\n")
-            written.append(dst)
+                for vw, vh in ladder_cells(gw, gh):
+                    rows = render_ansi_art(im, vw, vh)
+                    name = f"{art_key(src)}.art" if (vw, vh) == (gw, gh) else f"{art_key(src)}-{vw}x{vh}.art"
+                    dst = ARTS_DIR / name
+                    dst.write_text("\n".join(rows) + "\n", "utf-8", newline="\n")
+                    written.append(dst)
         except Exception:
             continue
     return written
 
 
 def write_preview_sixel(st: dict, image_path: str) -> Path | None:
-    """Encode the chosen image to a .sixel file for the terminal preview."""
+    """Encode the chosen image to .sixel files for the terminal preview.
+
+    The same ladder the launcher uses, so the preview shows what a real shell
+    would show in a window of that size - including the smaller sizes a narrow
+    or short window picks.
+    """
     if not (HAVE_PIL and HAVE_SIXEL) or not image_path or not Path(image_path).exists():
         return None
     cells_w = int(st.get("logWidth", 28))
     cells_h = int(st.get("logHeight", 24))
     try:
         with Image.open(image_path) as im:
-            enc = encode_sixel(fit_image_cells(im, cells_w, cells_h))
-        PREVIEW_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        PREVIEW_CACHE.write_bytes(enc)
+            PREVIEW_CACHE.parent.mkdir(parents=True, exist_ok=True)
+            for f in PREVIEW_CACHE.parent.glob(f"{PREVIEW_CACHE.stem}-*x*.sixel"):
+                f.unlink()          # never leave a variant of an older image
+            for vw, vh in ladder_cells(cells_w, cells_h):
+                enc = encode_sixel(fit_logo_cells(im, vw, vh, st))
+                name = (PREVIEW_CACHE.name if (vw, vh) == (cells_w, cells_h)
+                        else f"{PREVIEW_CACHE.stem}-{vw}x{vh}.sixel")
+                (PREVIEW_CACHE.parent / name).write_bytes(enc)
         return PREVIEW_CACHE
     except Exception:
         return None
@@ -1206,7 +1550,93 @@ function global:Get-TextLogoWidth {
     return $widest
 }
 
+function global:Get-FFSCellPx {
+    # Pixel size of one cell, as the sixels were encoded for - the same baked-in
+    # numbers the launcher uses, so the preview and the shell agree.
+    param([hashtable]$Plan)
+    $cw = @@CELLW@@
+    $ch = @@CELLH@@
+    if ($Plan -and [int]$Plan.CellW -gt 0 -and [int]$Plan.CellH -gt 0) {
+        $cw = [int]$Plan.CellW
+        $ch = [int]$Plan.CellH
+    }
+    if ($cw -le 0) { $cw = 10 }
+    if ($ch -le 0) { $ch = 20 }
+    return @($cw, $ch)
+}
+
+function global:Get-FFSRasterSize {
+    # The pixel size a sixel declares in its raster attributes, which is the size
+    # the terminal places it at. 0,0 when the file cannot be read.
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @(0, 0) }
+    try {
+        $fs = [IO.File]::OpenRead($Path)
+        try {
+            $head = New-Object byte[] 64
+            $n = $fs.Read($head, 0, 64)
+        } finally { $fs.Dispose() }
+        $txt = -join ($head[0..([Math]::Max(0, $n - 1))] | ForEach-Object { [char]$_ })
+        $m = [Text.RegularExpressions.Regex]::Match($txt, '"1;1;(\d+);(\d+)')
+        if ($m.Success) { return @([int]$m.Groups[1].Value, [int]$m.Groups[2].Value) }
+    } catch { }
+    return @(0, 0)
+}
+
 # --- the window, and one place that draws ----------------------------------
+function global:Get-FFSLogoFit {
+    # The largest pre-encoded size of this picture the window can hold, as a
+    # hashtable of W, H, Path and Px - or $null when even the smallest does not
+    # fit.
+    #
+    # Every size in the ladder was encoded from the same image against the
+    # terminal's measured cell size, so a variant's raster is exactly its cell
+    # box. Picking a file keeps that true; rewriting --logo-width to whatever the
+    # window allowed (what v1.1.15 did) broke it, and the fetch's text then
+    # landed in the picture's own columns - which is what the terminal reacts to
+    # by redrawing the picture in bands.
+    #
+    # Rows matter as much as columns: a 24-row picture in a 20-row window can
+    # only be drawn by scrolling, and a scrolled sixel is exactly the torn one.
+    param([string]$Path, [string]$Dir, [hashtable]$Plan, [int]$Room, [int]$Rows)
+    if (-not $Path -or -not $Dir) { return $null }
+    $cell = Get-FFSCellPx -Plan $Plan
+    $base = [IO.Path]::GetFileNameWithoutExtension($Path)
+    $files = @(Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue)
+    $files += @(Get-ChildItem -LiteralPath $Dir -Filter ($base + '-*x*.sixel') -File -ErrorAction SilentlyContinue)
+    $best = $null
+    foreach ($f in $files) {
+        $px = @(Get-FFSRasterSize -Path $f.FullName)
+        if ($px[0] -le 0 -or $px[1] -le 0) { continue }
+        $w = [int][Math]::Ceiling($px[0] / [double]$cell[0])
+        $h = [int][Math]::Ceiling($px[1] / [double]$cell[1])
+        if ($w -gt $Room -or $h -gt $Rows) { continue }
+        if ($null -eq $best -or ($w * $h) -gt ([int]$best.W * [int]$best.H)) {
+            $best = @{ W = $w; H = $h; Path = $f.FullName; Px = $px }
+        }
+    }
+    return $best
+}
+
+function global:Get-FFSArtFit {
+    # The same choice for the block-art ladder: a text logo cannot tear, so it is
+    # what a window too narrow or too short for the picture gets. The size is in
+    # the name, written by the encoder from the very cells it rendered.
+    param([string]$Path, [string]$Dir, [int]$Room, [int]$Rows)
+    if (-not $Path -or -not $Dir) { return $null }
+    $base = [IO.Path]::GetFileNameWithoutExtension($Path)
+    $best = $null
+    foreach ($f in @(Get-ChildItem -LiteralPath $Dir -Filter ($base + '-*x*.art') -File -ErrorAction SilentlyContinue)) {
+        if ($f.BaseName -notmatch '-(\d+)x(\d+)$') { continue }
+        $w = [int]$Matches[1]; $h = [int]$Matches[2]
+        if ($w -gt $Room -or $h -gt $Rows) { continue }
+        if ($null -eq $best -or ($w * $h) -gt ([int]$best.W * [int]$best.H)) {
+            $best = @{ W = $w; H = $h; Path = $f.FullName }
+        }
+    }
+    return $best
+}
+
 function global:Get-FFSGrid {
     # The current grid as @(columns, rows). There is no resize event to
     # subscribe to on Windows - ReadConsoleInput's WINDOW_BUFFER_SIZE_EVENT is
@@ -1235,8 +1665,10 @@ function global:Show-FFSFetch {
     # The logo is drawn beside a frame that is a fixed number of columns wide, so
     # the pair is wider than most windows and fastfetch wraps whatever does not
     # fit - landing the frame's border on the next row. Give the logo only what
-    # is left after the frame, and scale it with the space so the preview shows
-    # the layout the shell will actually get.
+    # is left after the frame. Its size is read out of the sixel itself rather
+    # than rewritten to fit: --logo-width says how many cells the picture
+    # occupies, it does not resize one, so a "fitted" number only moved the text
+    # on top of the picture (see Show-FFSFetch in the launcher).
     #
     # @@LOGOGAP@@ of those columns are fastfetch's own logo padding, which sits
     # between the logo and the text: without reserving it the pair "fits" on
@@ -1246,33 +1678,51 @@ function global:Show-FFSFetch {
     if ([int]$grid[0] -gt 0) { $Plan.Grid = @([int]$grid[0], [int]$grid[1]) }
     $cols = [int]$Plan.Grid[0]
     if ($cols -le 0) { $cols = 80 }
+    $rows = [int]$Plan.Grid[1]
+    if ($rows -le 0) { $rows = 24 }
+    $Plan.Rows = $rows
+    $rowRoom = $rows - 1
     $room = $cols - [int]$Plan.Band - 1 - [int]$Plan.Gap
-    $w = [int]$Plan.W
-    $h = [int]$Plan.H
-    if ($w -gt $room) {
-        if ($room -lt 10) {
-            $w = 0      # narrower than this is a smudge, not a logo - draw none
-        } else {
-            $h = [int][Math]::Round($h * $room / [double]$w)
-            if ($h -lt 4) { $h = 4 }
-            $w = $room
-        }
+    # Which pre-encoded size of the picture this window holds. The size is read
+    # out of the file that is about to be drawn and never rewritten to fit (see
+    # Show-FFSFetch in the launcher); a smaller file is what "fitting" means.
+    $fit = $null
+    if (-not $Plan.BlockArt -and (Test-Path -LiteralPath $Plan.Sixel)) {
+        $fit = Get-FFSLogoFit -Path $Plan.Sixel -Dir (Split-Path -Parent $Plan.Sixel) `
+                              -Plan $Plan -Room $room -Rows $rowRoom
     }
+    $w = 0
+    $h = 0
+    if ($fit) { $w = [int]$fit.W; $h = [int]$fit.H }
     # A text logo cannot be scaled - --logo-width does nothing to a file - so the
     # only way to keep the frame intact is to draw it only when it fits, and to
     # draw nothing when it does not rather than fall back to a wider logo.
+    $art = $null
+    if (Test-Path -LiteralPath $Plan.Art) {
+        $art = Get-FFSArtFit -Path $Plan.Art -Dir (Split-Path -Parent $Plan.Art) -Room $room -Rows $rowRoom
+    }
     $artW = 0
     if (Test-Path -LiteralPath $Plan.Art) { $artW = Get-TextLogoWidth -Path $Plan.Art }
     $artFits = $artW -gt 0 -and $artW -le $room
     $ffArgs = @()
     if ($Plan.Theme) { $ffArgs += $Plan.Theme }
     $narrow = ''
-    if ($w -le 0) {
-        $ffArgs += @('--logo', 'none')
-        $narrow = 'leaves no room for the logo beside the frame.'
-    } elseif (-not $Plan.BlockArt -and (Test-Path -LiteralPath $Plan.Sixel)) {
-        $ffArgs += @('--logo-type', 'raw', '--logo', $Plan.Sixel, '--logo-width', $w, '--logo-height', $h)
-    } elseif ($artFits) {
+    if ($Plan.BlockArt) {
+        # A console with no image protocol at all: fastfetch prints a *text* logo
+        # file verbatim, so the block art is the only way this terminal can show
+        # the user's own picture - and it cannot tear.
+        if ($artFits) { $ffArgs += @('--logo', $Plan.Art) }
+        elseif (Test-Path -LiteralPath $Plan.Art) {
+            $ffArgs += @('--logo', 'none')
+            $narrow = 'is too narrow for the logo beside the frame.'
+        } else { $ffArgs += @('--logo', 'none') }
+    } elseif ($fit) {
+        $ffArgs += @('--logo-type', 'raw', '--logo', $fit.Path, '--logo-width', $w, '--logo-height', $h, '--logo-print-remaining', 'false')
+    } elseif ($art) {
+        # Nothing in the picture's ladder fits, but a smaller block-art render of
+        # the same picture does: block resolution, nothing to tear.
+        $ffArgs += @('--logo', $art.Path)
+    } elseif ($artFits -and (Test-Path -LiteralPath $Plan.Art)) {
         # No image protocol to draw into - a bare console, say. fastfetch prints
         # a *text* logo file verbatim, so the block art still shows the user's
         # picture.
@@ -1306,10 +1756,13 @@ $global:FFSPlan = @{
     BlockArt = [bool]$BlockArt
     W        = @@W@@
     H        = @@H@@
+    CellW    = @@CELLW@@
+    CellH    = @@CELLH@@
     Band     = @@BOX@@
     Gap      = @@LOGOGAP@@
     Redraw   = @@REDRAW@@
     Grid     = @(0, 0)
+    Rows     = 0
 }
 
 @@RESIZEGUARD@@
@@ -1321,6 +1774,217 @@ Write-Host ''
 Write-Host 'FastFetch Studio preview - close this window when you are done.' -ForegroundColor DarkGray
 # <<< FastFetch Studio :: preview <<<
 """
+
+
+def load_metrics() -> dict:
+    """The measured terminal cell size, or {} when it has not been measured."""
+    try:
+        data = json.loads(METRICS_PATH.read_text("utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    try:
+        cw = int(data.get("cellW", 0)); ch = int(data.get("cellH", 0))
+    except (TypeError, ValueError):
+        return {}
+    if not (4 <= cw <= 80) or not (6 <= ch <= 160):
+        return {}
+    data["cellW"] = cw
+    data["cellH"] = ch
+    return data
+
+
+def save_metrics(cell_w: int, cell_h: int, **extra) -> None:
+    """Record the measured cell size so the encoder and launcher can both use it."""
+    payload = {"cellW": int(cell_w), "cellH": int(cell_h)}
+    payload.update(extra)
+    METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    METRICS_PATH.write_text(json.dumps(payload, indent=2) + "\n", "utf-8")
+
+
+# The probe the Random tab runs to learn the terminal's real cell size. It is a
+# generated file for the same reason the preview is (see PREVIEW_TEMPLATE):
+# Windows Terminal splits a `powershell -Command "..."` argument on ';'.
+#
+# Both numbers are measured, never assumed:
+#   cellH - from two images of known height: the terminal advances
+#           ceil(height / cellH) rows, so each probe brackets cellH
+#           (H/rows <= cellH < H/(rows-1)) and the two brackets are intersected.
+#           Measured this way on a 2880x1800 display at 200%: 20.5..21.1 px.
+#   cellW - from the window's client width, its column count and its DPI scale,
+#           which needs no guessing about fonts.
+# Terms such as "cell height" do not reach the user, so the probe says what it
+# found in plain words and the app turns that into sixels.
+MEASURE_TEMPLATE = r'''# >>> FastFetch Studio :: measure cells >>>
+# Generated by FastFetch Studio - measures the terminal's cell size in pixels.
+# The window closes on its own, and nothing is left on screen, because every
+# probe runs on the alternate screen buffer.
+$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FFSMeasure {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+}
+'@
+[void][FFSMeasure]::SetProcessDPIAware()
+
+$ffsTitle = 'FastFetch Studio measuring'
+$Host.UI.RawUI.WindowTitle = $ffsTitle
+Start-Sleep -Milliseconds 600
+
+# Every step is logged next to the result: what this measures is what the
+# terminal does with an image, so when a terminal answers oddly the log is the
+# only way to see why.
+$ffsLog = '@@LOGPATH@@'
+Remove-Item -LiteralPath $ffsLog -Force -ErrorAction SilentlyContinue
+function Say([string]$m) { Add-Content -LiteralPath $ffsLog -Value $m -Encoding UTF8 }
+Say ('grid=' + [Console]::WindowWidth + 'x' + [Console]::WindowHeight + ' buffer=' + [Console]::BufferWidth + 'x' + [Console]::BufferHeight)
+
+function Get-FFSProbeRows([int]$Height) {
+    # Rows the terminal spends on an image of this many pixels.
+    #
+    # Each probe runs on the alternate screen buffer: that puts the cursor back
+    # at the top for every one of them (a fresh window would otherwise be needed
+    # for each, because nothing moves the cursor up) and it throws the images
+    # away when the buffer is left, so no magenta block is left behind.
+    $file = Join-Path '@@PROBEDIR@@' ('probe-' + $Height + '.sixel')
+    if (-not (Test-Path -LiteralPath $file)) { Say ('probe ' + $Height + ': file missing'); return 0 }
+    $bytes = [IO.File]::ReadAllBytes($file)
+    $out = [Console]::OpenStandardOutput()
+    [Console]::Write("`e[?1049h")
+    Start-Sleep -Milliseconds 250
+    $before = [int][Console]::CursorTop
+    $out.Write($bytes, 0, $bytes.Length)
+    $out.Flush()
+    Start-Sleep -Milliseconds 450
+    $after = [int][Console]::CursorTop
+    $rows = $after - $before
+    Say ('probe ' + $Height + 'px: rows ' + $before + ' -> ' + $after + ' = ' + $rows)
+    [Console]::Write("`e[?1049l")
+    Start-Sleep -Milliseconds 250
+    # A reading that stopped on the last row was clamped by the bottom of the
+    # window and says nothing about the cell size.
+    if ($rows -le 1) { return 0 }
+    if ($after -ge ([int][Console]::WindowHeight - 1)) { Say ('probe ' + $Height + ': clamped at the last row'); return 0 }
+    return [int]$rows
+}
+
+$lo = 0.0
+$hi = 999.0
+$used = 0
+foreach ($h in @@PROBEHEIGHTS@@) {
+    $rows = Get-FFSProbeRows $h
+    if ($rows -le 1) { continue }
+    $a = $h / [double]$rows            # cellH >= a  (the terminal rounds up)
+    $b = $h / [double]($rows - 1)      # cellH <  b
+    if ($a -gt $lo) { $lo = $a }
+    if ($b -lt $hi) { $hi = $b }
+    $used++
+}
+Say ('cellH bracket: ' + [Math]::Round($lo, 2) + ' .. ' + [Math]::Round($hi, 2) + ' from ' + $used + ' probes')
+
+$cellH = 0.0
+if ($used -gt 0 -and $hi -gt $lo) { $cellH = ($lo + $hi) / 2.0 }
+elseif ($used -gt 0) { $cellH = $lo }
+
+$cellW = 0.0
+$exactW = $false
+$hw = [FFSMeasure]::FindWindow($null, $ffsTitle)
+$cols = [int][Console]::WindowWidth
+if ($hw -ne [IntPtr]::Zero -and $cols -gt 0) {
+    $cr = New-Object FFSMeasure+RECT
+    if ([FFSMeasure]::GetClientRect($hw, [ref]$cr)) {
+        $dpi = [FFSMeasure]::GetDpiForWindow($hw)
+        if (-not $dpi -or $dpi -le 0) {
+            # GetDpiForWindow needs a real top-level handle; the desktop DC knows
+            # the scaling either way.
+            $dpi = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero).DpiX
+        }
+        if ($dpi -gt 0) {
+            $dipW = ($cr.Right - $cr.Left) * 96.0 / $dpi
+            $cellW = $dipW / [double]$cols
+            $exactW = $true
+            Say ('client=' + ($cr.Right - $cr.Left) + 'px dpi=' + $dpi + ' cols=' + $cols + ' -> cellW=' + [Math]::Round($cellW, 2))
+        }
+    }
+}
+if (-not $exactW -and $cellH -gt 0) {
+    # No window handle to measure from. The fonts these terminals ship with are
+    # all about half as wide as they are tall, which is close enough to fall
+    # back on, and the result is recorded as the estimate it is.
+    $cellW = $cellH / 2.0
+    Say ('cellW from the font aspect: ' + [Math]::Round($cellW, 2))
+}
+
+$json = ''
+$cw = 0
+$ch = 0
+if ($cellW -gt 0 -and $cellH -gt 0) {
+    # Deliberately rounded *down*: the encoder and the launcher both work from
+    # these numbers, and a cell that is smaller than the real one makes the
+    # picture smaller than the cells fastfetch reserved for it. That is the safe
+    # direction - the picture can then never reach the text beside it, whatever
+    # the terminal rounds its own footprint up to.
+    $cw = [int][Math]::Floor($cellW)
+    $ch = [int][Math]::Floor($cellH)
+    if ($cw -lt 4) { $cw = 4 }
+    if ($ch -lt 6) { $ch = 6 }
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    $json = '{' +
+        '"cellW": ' + $cw + ', "cellH": ' + $ch + ', ' +
+        '"cols": ' + $cols + ', "rows": ' + [int][Console]::WindowHeight + ', ' +
+        '"cellWall": ' + $cellW.ToString('F2', $inv) + ', ' +
+        '"cellHall": ' + $cellH.ToString('F2', $inv) + ', ' +
+        '"cellWMeasured": ' + $(if ($exactW) { 'true' } else { 'false' }) + ', ' +
+        '"source": "measured"}' + "`n"
+    Set-Content -LiteralPath '@@METRICS@@' -Value $json -Encoding UTF8 -ErrorAction SilentlyContinue
+    Say ('metrics written: ' + $json.Trim())
+}
+
+if ($json) {
+    Write-Host ('FastFetch Studio: one logo cell in this terminal is ' + $cw + 'x' + $ch + ' pixels.') -ForegroundColor DarkGray
+    Write-Host '  Press Apply & Generate to draw the logos at that size.' -ForegroundColor DarkGray
+} else {
+    Write-Host 'FastFetch Studio: could not measure this terminal - the logo keeps its default cell.' -ForegroundColor Yellow
+}
+Start-Sleep -Seconds 3
+# <<< FastFetch Studio :: measure cells <<<
+'''
+
+
+def write_measure_script(st: dict | None = None) -> Path | None:
+    """Write gui\\measure-cells.ps1 plus its probe images."""
+    if not (HAVE_PIL and HAVE_SIXEL):
+        return None
+    metrics = load_metrics() or {}
+    cw, ch = CELL_PX_DEFAULT
+    if metrics:
+        cw, ch = metrics["cellW"], metrics["cellH"]
+    # Tallest first: it is drawn at the top of a fresh window, and the one after
+    # it starts wherever that left the cursor - a reading that runs into the
+    # last row is discarded rather than trusted.
+    heights = [600, 300]
+    try:
+        for h in heights:
+            im = Image.new("RGBA", (max(20, 20 * cw), h), (255, 0, 255, 255))
+            (GUI_DIR / f"probe-{h}.sixel").write_bytes(encode_sixel(im))
+    except Exception:
+        return None
+    body = (MEASURE_TEMPLATE
+            .replace("@@PROBEDIR@@", str(GUI_DIR))
+            .replace("@@LOGPATH@@", str(GUI_DIR / "measure-cells.log"))
+            .replace("@@PROBEHEIGHTS@@", ",".join(str(h) for h in heights))
+            .replace("@@METRICS@@", str(METRICS_PATH)))
+    MEASURE_SCRIPT.parent.mkdir(parents=True, exist_ok=True)
+    MEASURE_SCRIPT.write_text(body, "utf-8", newline="\n")
+    return MEASURE_SCRIPT
 
 
 def write_preview_script(st: dict, image_path: str) -> Path | None:
@@ -1338,6 +2002,8 @@ def write_preview_script(st: dict, image_path: str) -> Path | None:
             .replace("@@ART@@", str(ARTS_DIR / f"{art_key(image_path)}.art"))
             .replace("@@W@@", str(int(st.get("logWidth", 28))))
             .replace("@@H@@", str(int(st.get("logHeight", 24))))
+            .replace("@@CELLW@@", str(logo_cell_px(st)[0]))
+            .replace("@@CELLH@@", str(logo_cell_px(st)[1]))
             .replace("@@BOX@@", str(frame_width(st)))
             .replace("@@REDRAW@@", redraw_flag(st))
             .replace("@@RESIZEGUARD@@", RESIZE_GUARD_TEMPLATE)
@@ -1398,6 +2064,33 @@ def spawn_terminal_preview(st: dict, image_path: str) -> tuple[bool, str]:
         return False, f"Could not open a preview window: {e}"
 
 
+def measure_argv(script: Path) -> list[str]:
+    """The wt.exe line that opens the cell-size probe.
+
+    Same rule as preview_argv: nothing on this line may contain ';' - Windows
+    Terminal splits its command line on it even inside a quoted argument, which
+    is what once produced `Error 2147942402`. The probe lives in its own file
+    for exactly that reason.
+    """
+    return ["wt.exe", "-w", "-1", "nt", "--title", "FastFetch Studio measuring",
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", str(script)]
+
+
+def spawn_measure(script: Path) -> tuple[bool, str]:
+    """Open the terminal window that measures its own cell size."""
+    try:
+        subprocess.Popen(measure_argv(script),
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return True, "Measuring your terminal in a new window"
+    except FileNotFoundError:
+        # No wt.exe: a bare console window cannot be measured the same way (it
+        # has no sixel support at all), so say so instead of guessing.
+        return False, "Windows Terminal (wt.exe) was not found - the picture uses a 10x20 cell here"
+    except Exception as e:
+        return False, f"Could not open Windows Terminal: {e}"
+
+
 # --------------------------------------------------------------------------- selftest
 def selftest() -> int:
     st = load_state()
@@ -1436,9 +2129,49 @@ def selftest() -> int:
     # Pixel-level regression guard: re-encode gallery[0], decode it back,
     # compare every painted pixel against the quantized source.
     if HAVE_PIL and HAVE_SIXEL and st.get("gallery"):
+        cells_w = int(st["logWidth"]); cells_h = int(st["logHeight"])
+        cw, ch = logo_cell_px(st)
         with Image.open(st["gallery"][0]["path"]) as im0:
-            src = fit_image_cells(im0, int(st["logWidth"]), int(st["logHeight"]))
+            src = fit_logo_cells(im0, cells_w, cells_h, st)
             srcq = quantize_rgb(src)
+        # The invariant that stopped the logo from tearing: the raster is
+        # exactly the cell box it is placed into, and it is one column short of
+        # the cell count fastfetch is told about, so no glyph can be written
+        # into the picture's own cells.
+        if (src.width, src.height) != (cells_w * cw, cells_h * ch):
+            print(f"selftest: FAIL raster {src.width}x{src.height} != "
+                  f"{cells_w}x{cells_h} cells of {cw}x{ch} px")
+            return 1
+        inner_w = (cells_w - LOGO_SLACK_COLS) * cw
+        als = src.convert("RGBA").getchannel("A").load()
+        painted_right = max((xx for xx in range(src.width) for yy in range(src.height)
+                             if als[xx, yy] >= ALPHA_THRESHOLD), default=-1)
+        if painted_right >= inner_w:
+            print(f"selftest: FAIL picture reaches column {painted_right}, past the "
+                  f"{inner_w}px of clear space the text needs")
+            return 1
+        print(f"selftest: logo canvas {src.width}x{src.height} px, picture ends at "
+              f"x={painted_right} of {inner_w} px of room")
+        # The ladder a narrow window picks from: every variant has to hold the
+        # same invariant as the full size (raster == cells x cell px), because a
+        # variant whose raster and declared cells disagree is the bug again,
+        # just at a smaller size.
+        key = re.sub(r"[^A-Za-z0-9]+", "-", Path(st["gallery"][0]["path"]).stem).strip("-") or "img"
+        for vw, vh in ladder_cells(cells_w, cells_h):
+            name = (f"{key}.sixel" if (vw, vh) == (cells_w, cells_h)
+                    else f"{key}-{vw}x{vh}.sixel")
+            vfile = SIXELS_DIR / name
+            if not vfile.exists():
+                print(f"selftest: FAIL ladder variant {name} was not written")
+                return 1
+            w3, h3, _ = decode_sixel_pixels(vfile.read_bytes())
+            if (w3, h3) != (vw * cw, vh * ch):
+                print(f"selftest: FAIL ladder variant {name} is {w3}x{h3} px, "
+                      f"not {vw}x{vh} cells of {cw}x{ch} px ({vw * cw}x{vh * ch})")
+                return 1
+        steps = ladder_cells(cells_w, cells_h)
+        print(f"selftest: logo ladder ok ({len(steps)} sizes: "
+              + ", ".join(f"{w}x{h}" for w, h in steps) + ")")
         w2, h2, grid = decode_sixel_pixels(encode_sixel(src))
         if (w2, h2) != (src.width, src.height):
             print(f"selftest: FAIL round-trip size {w2}x{h2} != {src.width}x{src.height}")
@@ -1459,6 +2192,26 @@ def selftest() -> int:
             print(f"selftest: FAIL round-trip mismatch {mismatch}/{total} pixels (opaque {n_opaque})")
             return 1
         print(f"selftest: sixel round-trip ok ({n_opaque} painted of {total}, {mismatch} mismatched)")
+    # The generated scripts have to agree with the encoder about one number: the
+    # cell size. When they drift, the launcher derives a different cell count out
+    # of the raster than the picture needs - which is the bug this all exists for.
+    if HAVE_PIL and HAVE_SIXEL:
+        cw, ch = logo_cell_px(st)
+        launcher = LAUNCHER_PATH.read_text("utf-8", errors="replace") if LAUNCHER_PATH.exists() else ""
+        if "@@" in launcher:
+            print("selftest: FAIL the launcher still has an unsubstituted @@placeholder@@")
+            return 1
+        for needle, why in (("--logo-print-remaining", "fastfetch would pad blank lines over the picture"),
+                            ("Get-FFSRasterSize", "the logo size is not read from the file"),
+                            ("Get-FFSLogoFit", "a window that cannot hold the full size has no smaller one"),
+                            ("Get-FFSArtFit", "no block-art size is chosen for a narrow window"),
+                            (f"$cw = {cw}", "the launcher's cell width disagrees with the encoder"),
+                            (f"$ch = {ch}", "the launcher's cell height disagrees with the encoder"),
+                            ("`n\" * ($rows + 2)", "the resize repair does not scroll the torn copy away")):
+            if needle not in launcher:
+                print(f"selftest: FAIL launcher is missing {needle!r} - {why}")
+                return 1
+        print(f"selftest: launcher agrees on a {cw}x{ch} px cell and derives the logo size")
     print(f"selftest: {summary}; launcher={'ok' if LAUNCHER_PATH.exists() else 'MISSING'}")
     return 0 if ok else 1
 
@@ -2354,11 +3107,28 @@ class App(tk.Tk):
         self.redraw_resize = tk.BooleanVar(value=STATE.get("redrawOnResize", True))
         FFToggle(logo, "Re-draw the fetch when the window is resized",
                  self.redraw_resize, command=self._random_changed).pack(anchor="w", pady=3)
-        tk.Label(logo, text="erases the visible screen to redraw the logo after a resize "
-                            "(scrollback is kept); off = a resized window keeps the torn "
-                            "picture until a new shell is opened",
+        tk.Label(logo, text="scrolls the torn copy away and draws the fetch again after a "
+                            "resize (scrollback is kept); off = a resized window keeps the "
+                            "torn picture until a new shell is opened",
                  bg=PANEL, fg=MUTED, font=FONT_SMALL, anchor="w", justify="left",
                  wraplength=560).pack(anchor="w", pady=(0, 4))
+
+        # How big one cell is decides how big the pre-encoded picture is: a
+        # sixel is placed at its pixel size, so a logo encoded for the wrong
+        # cell lands beside the text by fractions of a cell - and text written
+        # into the picture's own cells is what made Windows Terminal redraw it
+        # in bands. 10x20 is the shipped default; one measurement makes it exact.
+        self.cell_label = tk.Label(logo, bg=PANEL, fg=MUTED, font=FONT_SMALL,
+                                   anchor="w", justify="left", wraplength=560)
+        self.cell_label.pack(anchor="w", pady=(6, 2))
+        self._refresh_cell_label()
+        measure = tk.Frame(logo, bg=PANEL)
+        measure.pack(anchor="w", pady=(0, 2))
+        AnimatedButton(measure, text="Measure this terminal", command=self._measure_terminal,
+                       padx=10, pady=4).pack(side="left")
+        tk.Label(measure, text="  opens a short-lived window, reads its real cell size, "
+                               "and re-encodes the logos",
+                 bg=PANEL, fg=MUTED, font=FONT_SMALL).pack(side="left")
 
         # Aligned columns beat the old flat tk.Text blob, which sat dark-on-dark
         # and relied on hand-counted spaces for its "columns".
@@ -2373,6 +3143,63 @@ class App(tk.Tk):
                      anchor="w").grid(row=i, column=1, sticky="w", pady=1)
             tk.Label(table, text=desc, bg=PANEL, fg=MUTED, font=FONT_SMALL,
                      anchor="w").grid(row=i, column=2, sticky="w", padx=(10, 0), pady=1)
+
+    def _refresh_cell_label(self):
+        cw, ch = logo_cell_px(STATE)
+        measured = STATE.get("cellSource") == "measured"
+        if measured:
+            text = (f"logo cells: {cw}x{ch} pixels - measured in this terminal, so the "
+                    f"picture lands on whole cells")
+        else:
+            text = (f"logo cells: {cw}x{ch} pixels (default guess) - measure this terminal "
+                    f"if the picture sits a little off beside the text")
+        try:
+            self.cell_label.configure(text=text)
+        except Exception:
+            pass
+
+    def _measure_terminal(self):
+        script = write_measure_script(STATE)
+        if script is None:
+            self.status("Measuring needs Pillow (pip install pillow) - keeping the default cell")
+            return
+        METRICS_PATH.unlink(missing_ok=True)
+        ok, msg = spawn_measure(script)
+        self.status(msg)
+        if ok:
+            threading.Thread(target=self._await_metrics, daemon=True).start()
+
+    def _await_metrics(self, timeout: float = 30.0):
+        """Wait for the probe window to report, then re-draw everything at its size."""
+        end = time.time() + timeout
+        found = {}
+        while time.time() < end:
+            found = load_metrics()
+            if found:
+                break
+            time.sleep(0.4)
+        try:
+            self.after(0, self._apply_metrics, found)
+        except Exception:
+            pass
+
+    def _apply_metrics(self, metrics: dict):
+        if not metrics:
+            self.status("Could not measure this terminal - the logos keep the default cell")
+            return
+        STATE["cellW"] = metrics["cellW"]
+        STATE["cellH"] = metrics["cellH"]
+        STATE["cellSource"] = "measured"
+        save_state(STATE)
+        # The sixels are the thing that has to change: they are encoded at this
+        # cell size, and the launcher reads the cell count back out of them.
+        self._sync_sixels()
+        write_config(STATE)
+        generate_theme_files(STATE)
+        generate_launcher(STATE)
+        self._refresh_cell_label()
+        self.status(f"One cell is {metrics['cellW']}x{metrics['cellH']} pixels - "
+                    f"logos re-encoded; press Apply & Generate to keep it")
 
     def _random_changed(self):
         STATE["randomLogo"] = bool(self.rand_logo.get())

@@ -65,8 +65,13 @@ jobs:
           # retry-on-failure only happens inside that branch. Without one, every
           # case takes the no-image path and the retry is never exercised.
           $sixels = Join-Path $env:USERPROFILE '.config\fastfetch\sixels'
+          $arts   = Join-Path $env:USERPROFILE '.config\fastfetch\arts'
           New-Item -ItemType Directory -Path $sixels -Force | Out-Null
-          Set-Content -LiteralPath (Join-Path $sixels 'demo.sixel') -Value 'x' -NoNewline
+          New-Item -ItemType Directory -Path $arts -Force | Out-Null
+          # A real ladder, written by the app's own encoder. The launcher chooses
+          # which file to draw by reading each sixel's raster header, so a fixture
+          # that is not a sixel only exercises the failure path.
+          python tools/make-logo-fixtures.py --sixel-dir $sixels --art-dir $arts --name demo
           $themes = Join-Path $env:USERPROFILE '.config\fastfetch\themes'
           New-Item -ItemType Directory -Path $themes -Force | Out-Null
           Set-Content -LiteralPath (Join-Path $themes 'theme-01.jsonc') -Value '{"modules":[]}'
@@ -347,18 +352,24 @@ jobs:
                                    "Add-Content -LiteralPath `$env:FF_LOG -Value (`$a -join ' ')")
           if ($fitBase -match '& \$Plan\.Exe') { throw 'the launcher invocation was not swapped out for the fit probe' }
 
+          # Room is cols - 46 (frame) - 1 - 4 (fastfetch's logo padding), and the
+          # ladder is 28x24, 24x21, 20x17, 16x14, 12x11 for the 28x24 fixture.
+          # Fitting means *choosing a smaller file*: --logo-width is the chosen
+          # file's real cell count, never a number rewritten to fit, because a
+          # number that disagrees with the raster is what put the fetch's text
+          # inside the picture (text inside a sixel's cells tears it).
           $fitCases = @(
             @{ cols = 120; want = '--logo-width 28 --logo-height 24' },   # room 69 - as configured
             @{ cols =  80; want = '--logo-width 28 --logo-height 24' },   # room 29
-            @{ cols =  75; want = '--logo-width 24 --logo-height 21' },   # room 24 - scaled, aspect kept
-            @{ cols =  74; want = '--logo-width 23 --logo-height 20' },
-            @{ cols =  64; want = '--logo-width 13 --logo-height 11' },
-            @{ cols =  61; want = '--logo-width 10 --logo-height 9' },    # room 10 - the floor
-            @{ cols =  60; want = '--logo none' }                         # room 9 - too narrow, no logo
+            @{ cols =  75; want = '--logo-width 24 --logo-height 21' },   # room 24 - one step down
+            @{ cols =  74; want = '--logo-width 20 --logo-height 17' },   # room 23 - and another
+            @{ cols =  64; want = '--logo-width 12 --logo-height 11' },   # room 13
+            @{ cols =  61; want = '--logo none' },                        # room 10 - nothing fits
+            @{ cols =  59; want = '--logo none' }                         # room 8
           )
           foreach ($c in $fitCases) {
             Set-Content -LiteralPath $fitProbe -Value `
-              $fitBase.Replace('[Console]::WindowWidth', [string]$c.cols)
+              ($fitBase.Replace('[Console]::WindowWidth', [string]$c.cols).Replace('[Console]::WindowHeight', '42'))
             # WT_SESSION so the sixel branch runs: that is the one that sizes the logo.
             $got = Get-Branch @{ WT_SESSION = 'ci' } $fitProbe
             Write-Host ("  window {0,3} cols         -> {1}" -f $c.cols, $got)
@@ -406,7 +417,7 @@ jobs:
             New-Item -ItemType Directory -Path (Join-Path $root $d) -Force | Out-Null
           }
           Set-Content -LiteralPath (Join-Path $root 'themes\theme-01.jsonc') -Value '{"modules":[]}'
-          Set-Content -LiteralPath (Join-Path $root 'sixels\demo.sixel') -Value 'x' -NoNewline
+          python tools/make-logo-fixtures.py --sixel-dir (Join-Path $root 'sixels') --art-dir (Join-Path $root 'arts') --name demo
           $bin = Join-Path $env:USERPROFILE '.local\bin'
           New-Item -ItemType Directory -Path $bin -Force | Out-Null
           Set-Content -LiteralPath (Join-Path $bin 'fastfetch.exe') -Value '' -NoNewline
@@ -432,7 +443,7 @@ jobs:
             return $out
           }
 
-          function Resized([string]$StateJson, [string]$Then = '61, 30') {
+          function Resized([string]$StateJson, [string]$Then = '64, 30') {
             Set-Content -LiteralPath $state -Value $StateJson
             $probe = New-ResizeProbe -FirstCols 120 -Then $Then
             $env:FF_LOG = $log
@@ -457,22 +468,29 @@ jobs:
           $on  = '{"randomLogo":true,"randomTheme":true,"logWidth":28,"logHeight":24,"redrawOnResize":true}'
           $off = '{"randomLogo":true,"randomTheme":true,"logWidth":28,"logHeight":24,"redrawOnResize":false}'
 
-          # 120 columns -> 61: the logo is re-fitted (28x24 -> 10x9), the torn
-          # copy is erased, and the theme and picture are the same ones.
+          # 120 columns -> 64: the logo is re-fitted to the room that leaves
+          # (28x24 -> the 12x11 step of the ladder), the torn copy is erased, and
+          # the theme and picture are the same ones.
           $r = Resized $on
           $draws = @($r.After | Where-Object { $_ -match '--logo' })
           Write-Host "  after a resize -> $($draws -join ' | ')"
           if ($draws.Count -ne 2) { throw "expected the first draw plus one repair, got $($draws.Count)" }
           if ($draws[0] -notmatch '--logo-width 28 --logo-height 24') { throw "first draw wrong: $($draws[0])" }
           if (-not ($r.After | Where-Object { $_ -eq 'erase' })) { throw 'the torn copy was never erased' }
-          if ($draws[1] -notmatch '--logo-width 10 --logo-height 9') { throw "the repair drew the wrong size: $($draws[1])" }
+          # 64 columns leaves room 13, so the repair draws the 12x11 step of the
+          # ladder - a different file, the same picture.
+          if ($draws[1] -notmatch '--logo-width 12 --logo-height 11') { throw "the repair drew the wrong size: $($draws[1])" }
           if (($draws[0] -split ' --')[0] -ne ($draws[1] -split ' --')[0]) {
             throw 'the theme changed on resize; a resize is not a new shell'
           }
           $img0 = ([regex]::Match($draws[0], 'sixels\\[^ ]*\.sixel')).Value
           $img1 = ([regex]::Match($draws[1], 'sixels\\[^ ]*\.sixel')).Value
           if (-not $img0) { throw "the first draw did not use the sixel fixture: $($draws[0])" }
-          if ($img0 -ne $img1) { throw "the picture changed on resize: $img0 -> $img1" }
+          # The ladder means the repair may pick a smaller *file* of the same
+          # picture. What must not change is which picture it is.
+          if (($img0 -replace '-\d+x\d+\.sixel$', '.sixel') -ne ($img1 -replace '-\d+x\d+\.sixel$', '.sixel')) {
+            throw "the picture changed on resize: $img0 -> $img1"
+          }
           if ($r.Loop -ne 0) { throw "the fetch was redrawn again with no resize ($($r.Loop) extra lines)" }
           Write-Host 'resize ok (same theme, same picture, re-fitted, erased, no loop)'
 
@@ -481,7 +499,7 @@ jobs:
           $global:FFSPrevPrompt = $null
           $r2 = Resized $on
           if ($r2.Prompt -notmatch 'USER-PROMPT>') { throw "the user's prompt was replaced: $($r2.Prompt)" }
-          if (@($r2.After | Where-Object { $_ -match '--logo-width 10' }).Count -ne 1) {
+          if (@($r2.After | Where-Object { $_ -match '--logo-width 12' }).Count -ne 1) {
             throw 'a shell with its own prompt did not get the repair'
           }
           Write-Host 'chained prompt ok (repair still runs, prompt text untouched)'
@@ -599,7 +617,9 @@ jobs:
             return 'none'
           }
 
-          Set-Content -LiteralPath $sixel -Value 'x' -NoNewline
+          # A real ladder in gui\: the preview reads the raster out of the file it
+          # is about to draw, exactly as the launcher does.
+          python tools/make-logo-fixtures.py --sixel-dir (Join-Path $root 'gui') --name preview
           Assert-Preview 'sixel present' (Get-PreviewBranch) '--logo-type raw'
 
           # No sixel (Pillow missing, say) must still show the picture as block art.
@@ -608,7 +628,7 @@ jobs:
 
           # -BlockArt is what the no-wt.exe console fallback passes: a bare console
           # cannot draw sixel, so it must go straight to the art even if one exists.
-          Set-Content -LiteralPath $sixel -Value 'x' -NoNewline
+          python tools/make-logo-fixtures.py --sixel-dir (Join-Path $root 'gui') --name preview
           Assert-Preview '-BlockArt' (Get-PreviewBranch -BlockArt) 'arts\img.art'
 
           # A text logo cannot be scaled by --logo-width, so an art wider than the
@@ -633,7 +653,7 @@ jobs:
           # what wrapped the preview over itself. Pinned by forcing the leftover
           # room negative rather than by guessing the runner's window width.
           $narrow = Join-Path $env:TEMP 'preview-probe-narrow.ps1'
-          Set-Content -LiteralPath $sixel -Value 'x' -NoNewline
+          python tools/make-logo-fixtures.py --sixel-dir (Join-Path $root 'gui') --name preview
           Set-Content -LiteralPath $narrow -Value `
             $src.Replace('$room = $cols -', '$room = 0 -')
           Assert-Preview 'window too narrow' (Get-PreviewBranch -Script $narrow) '--logo none'

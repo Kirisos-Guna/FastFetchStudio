@@ -199,11 +199,22 @@ to `image` or `builtin` for a single shell. Also check that your Windows Termina
 
 **The logo comes apart when I go fullscreen (Alt+Enter), or after any resize.**
 Alt+Enter is Windows Terminal's `toggleFullscreen`, and a resize reflows the text under the image:
-the picture is anchored to the cells it was drawn over and cannot follow. The launcher
-redraws the same fetch at the new size as soon as the prompt comes back, so press Enter (or run
-`Redraw-Fetch`) and the picture is whole again; the *Random* tab switch **Re-draw the fetch when the
-window is resized** turns that off. See the README's *Alt+Enter (or any resize) tears the logo into
-bands* for the terminal-side workarounds.
+the picture is anchored to the cells it was drawn over and cannot follow. Two things keep it from
+looking broken:
+
+- the launcher never tells fastfetch a logo size that disagrees with the picture, and when the
+  window is too narrow for the configured size it draws a smaller pre-encoded one instead. Text
+  written into the picture's own cells is what makes the terminal redraw it in bands, and that is
+  what the "fitted" size used to cause in any window narrower than logo + frame;
+- after a resize it scrolls the torn copy off the screen and draws the same fetch again at the new
+  size, as soon as the prompt comes back. Press Enter (or run `Redraw-Fetch`) and the picture is
+  whole again; the *Random* tab switch **Re-draw the fetch when the window is resized** turns that
+off.
+
+If the picture comes back *smaller* than you configured, that is the size ladder doing its job: the
+window has fewer columns than the configured logo needs. `gui\last-draw.txt` records the window, the
+room it left and the size that was drawn, and widening the window brings the full size back. See the
+README's *Alt+Enter (or any resize) tears the logo into bands* for the terminal-side workarounds.
 
 **The fetch is printed twice, in two colour schemes.**
 Your profile has two fastfetch calls — `setup.ps1`'s managed block, and the documented snippet

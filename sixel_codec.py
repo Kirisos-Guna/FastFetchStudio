@@ -76,9 +76,31 @@ def quantize_rgb(im: Image.Image) -> Image.Image:
     return im.convert("RGB").quantize(colors=256, method=Image.MEDIANCUT).convert("RGB")
 
 
-def fit_image_cells(im: Image.Image, cells_w: int, cells_h: int) -> Image.Image:
-    """Aspect-fit into the cell box (cell = 10x20 px), centered, transparency kept."""
-    box_w, box_h = cells_w * 10, cells_h * 20
+# The pixel size of one terminal cell, in the units a sixel's raster attributes
+# count in: Windows Terminal draws a sixel at 1 pixel per *device independent*
+# pixel and scales it to the monitor's DPI, so a 280x480 raster is 28x24 cells
+# on a 100% display and the same size (but twice the device pixels) at 200%.
+# Measured on a 2880x1800 display at 200% with Consolas: cell = 9.9 x 20.7 px,
+# and the terminal advanced exactly ceil(px / cellH) rows for probe images of
+# 100 / 200 / 300 px. 10x20 is therefore the right assumption to fall back to,
+# and a measured value (gui/term-metrics.json) makes the match exact.
+CELL_PX_DEFAULT = (10, 20)
+
+
+def fit_image_cells(im: Image.Image, cells_w: int, cells_h: int,
+                    cell_px: tuple[int, int] = CELL_PX_DEFAULT) -> Image.Image:
+    """Aspect-fit into the cell box, centered, transparency kept.
+
+    The canvas is exactly `cells_w x cells_h` cells, because that is the area
+    the terminal reserves for the picture: a sixel is placed by its raster
+    size, so a canvas smaller than the cells fastfetch was told about leaves a
+    hole, and a larger one is drawn over the text beside it.
+
+    `cell_px` is the terminal's own cell size, so the picture comes out the
+    size the app drew it at rather than the size a hard-coded 10x20 guess says.
+    """
+    cw, ch = int(cell_px[0]), int(cell_px[1])
+    box_w, box_h = int(cells_w) * cw, int(cells_h) * ch
     im = im.convert("RGBA")
     im.thumbnail((box_w, box_h), Image.LANCZOS)
     canvas = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))

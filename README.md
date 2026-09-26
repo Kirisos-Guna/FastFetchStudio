@@ -153,17 +153,26 @@ border with it. Three things fix that:
 
 - **fastfetch is told not to wrap** (`--disable-linewrap true`). An over-long row is clipped at the
   window edge instead of pushing the frame onto the next line. Every row stays on its own line.
-- **The logo is scaled to the room the frame leaves** — `window − frame − 1 − 4`, aspect ratio
-  kept. The `4` is fastfetch's own logo padding, which sits between the picture and the text; it is
-  easy to forget and, without it, the frame's last three columns are still pushed off the edge.
-  Below 10 columns there is no room for a picture at all, so the frame is drawn on its own and a
-  one-line note says why.
+- **The logo is drawn from a ladder of pre-encoded sizes** — the same picture at 100%, 86%, 72%,
+  58% and 44% of the configured cells — and the launcher draws the largest one that fits both
+  `window − frame − 1 − 4` columns and the window's rows. The `4` is fastfetch's own logo padding,
+  which sits between the picture and the text; it is easy to forget and, without it, the frame's
+  last three columns are still pushed off the edge. Choosing a smaller *file* is the point:
+  `--logo-width`/`--logo-height` only say how many cells the picture occupies, so a "fitted" number
+  leaves the picture where it is and moves the fetch's text on top of it — and text inside the cells
+  a sixel covers is what Windows Terminal redraws in bands. When nothing in the ladder fits, the
+  block art (pure text, so it cannot tear) is drawn from its own ladder, and below that the frame is
+  drawn on its own with a one-line note saying why.
+- **Every draw records what it did** in `gui\last-draw.txt`: the window it found, the room it had,
+  which file it drew and at what cell size. "Where did my logo go?" is then a question about a file
+  rather than about a screenshot.
 - **The frame is measured against this machine's own rows** when you press *Apply & Generate*, and
   widened if the longest row would hang outside it (clamped to 40–64). A machine with a longer GPU
   name therefore gets a frame that contains it, rather than a row that spills past the border.
 
-The block-art fallback cannot be scaled — fastfetch prints a text logo file verbatim, so
-`--logo-width` does nothing to it — so the art is drawn only when it fits beside the frame.
+The block-art fallback cannot be scaled either — fastfetch prints a text logo file verbatim, so
+`--logo-width` does nothing to it — so it is pre-rendered at every step of the ladder too, and drawn
+only when the step fits beside the frame.
 
 The CPU row is deliberately the model name alone (`Intel(R) Core(TM) Ultra 7 258V`, not
 `… @ 4.80 GHz`). The boost clock made it the widest row in the fetch, and every column the rows
@@ -184,8 +193,25 @@ the frame is a fixed rule baked into the themes, and there is nothing left to gi
 
 ### Alt+Enter (or any resize) tears the logo into bands
 
-Fixed in v1.1.15. Before that the launcher drew once, at shell start, and never again — so a
-resize left the torn picture on screen until a new terminal was opened.
+This had two causes, and both were ours rather than the terminal's.
+
+**The picture's size was a fiction.** A sixel is placed by its raster size in pixels, while
+`--logo-width`/`--logo-height` only tell fastfetch how many cells it thinks the picture occupies.
+When the window was narrower than the configured logo, the launcher handed fastfetch a *smaller*
+number than the picture really was — so fastfetch laid its text out where the picture already is,
+and text written into the cells a sixel covers is what makes Windows Terminal redraw the image in
+bands, with slivers of glyphs punched through it. That is the shape most people see, and it needs no
+resize at all: a terminal snapped to half a 1440x900 screen is 70 columns, the frame takes 46 plus
+fastfetch's own 4 columns of padding, so 20 columns are left for a picture that wants 28. Since
+v1.1.16 those two flags are never rewritten — the launcher draws a smaller pre-encoded file from the
+ladder instead, and the flags always describe the file it is actually drawing.
+
+**The torn picture could not be taken off the screen.** The v1.1.15 repair cleared the text buffer
+before redrawing, and in Windows Terminal 1.24 `[Console]::Clear()` does not remove a sixel at all —
+the image lives in its own layer, not in the buffer. Every resize therefore left the broken copy on
+screen and painted a second fetch over it, which is exactly the doubled, banded logo the repair was
+meant to fix. What does remove it is scrolling the lines it was drawn on out of the viewport, and
+that is what the repair does now.
 
 Alt+Enter is Windows Terminal's `toggleFullscreen`, and going fullscreen changes the window's
 *grid* — both its columns and its rows. The logo is a real image, rasterized into the terminal
@@ -198,9 +224,9 @@ is only the image that cannot follow a reflow.
 Nothing running in the terminal can react while that happens: Windows has no `SIGWINCH`, and the
 only console signal it does have (`WINDOW_BUFFER_SIZE_EVENT`) has to be read out of the input
 buffer, which PSReadLine owns. So the launcher notices afterwards instead. The prompt compares the
-grid the fetch was drawn at with the grid now, and when they differ it erases the torn copy — an
-image cannot be taken out of the buffer any other way than by clearing the cells it covers — and
-draws the same fetch again: same theme, same picture, re-fitted to the new window.
+grid the fetch was drawn at with the grid now, and when they differ it scrolls the torn copy off the
+screen — the only thing that removes a sixel — and draws the same fetch again: same theme, same
+picture, re-fitted to the new window by picking from the size ladder.
 
 - **On by default.** *Random* tab → **Re-draw the fetch when the window is resized**. With it off,
   a resized window keeps the torn picture until a new terminal is opened. Either way only the
