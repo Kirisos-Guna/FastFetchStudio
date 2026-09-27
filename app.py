@@ -1747,6 +1747,14 @@ function global:Show-FFSFetch {
         # anyway is what pushed the frame off the edge.
         $ffArgs += @('--logo', 'none')
         $narrow = 'is too narrow for the logo beside the frame.'
+    } elseif (Test-Path -LiteralPath $Plan.Sixel) {
+        # The picture is there but neither it nor any block art fits the room
+        # the frame leaves. fastfetch's built-in logo is 40 columns wide - wider
+        # than what just failed to fit - so drawing it instead would trade one
+        # overflow for a worse one: the frame is drawn alone, exactly as the
+        # launcher does when its own fit comes up empty.
+        $ffArgs += @('--logo', 'none')
+        $narrow = 'is too narrow for the logo beside the frame.'
     } else {
         $ffArgs += @('--logo', 'Windows11')
     }

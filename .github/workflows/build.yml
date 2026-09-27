@@ -712,7 +712,14 @@ jobs:
           Set-Content -LiteralPath (Join-Path $bin 'fastfetch.exe') -Value '' -NoNewline
 
           # No sixel - Pillow missing on the user's machine, say - so the block
-          # art is the logo, and drawing it again means measuring it again.
+          # art is the logo, and drawing it again means measuring it again. The
+          # branch step above leaves a real ladder in gui\, and a 120-column
+          # window holds the full size: drop it so this step pins the art branch
+          # it is about, whatever ran before.
+          Get-ChildItem -LiteralPath (Join-Path $root 'gui') -Filter 'preview-*.sixel' -File |
+            Remove-Item -Force
+          Remove-Item -LiteralPath (Join-Path $root 'gui\preview.sixel') -Force -ErrorAction SilentlyContinue
+
           $log = Join-Path $env:TEMP 'preview-resize-log.txt'
           $env:FF_LOG = $log
           $probe = Join-Path $env:TEMP 'preview-resize-probe.ps1'
