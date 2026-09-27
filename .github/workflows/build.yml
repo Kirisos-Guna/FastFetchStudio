@@ -538,6 +538,18 @@ jobs:
           # Leave the default launcher behind, as the other steps expect it.
           python -c "import app; app.generate_launcher({'logWidth':28,'logHeight':24})"
 
+      # `e is PowerShell 7-only. The profile hook can launch this generated code
+      # in Windows PowerShell 5.1, so prove both engines emit real ESC bytes for
+      # resize repair and the cell measurement alternate-screen commands.
+      - name: Terminal escapes work in Windows PowerShell 5.1 and PowerShell 7
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:USERPROFILE '.config\fastfetch'
+          New-Item -ItemType Directory -Path (Join-Path $root 'themes') -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $root 'themes\theme-01.jsonc') -Value '{"modules":[]}'
+          python -c "import app; app.generate_launcher({'logWidth':28,'logHeight':24}); app.write_preview_script({'logWidth':28,'logHeight':24,'gallery':[]}, ''); app.write_measure_script()"
+          ./tools/test-ps-escapes.ps1 -FastFetchRoot $root -RequirePowerShell7
+
       # "Preview in terminal" used to fail with
       #   Error 2147942402 (0x80070002) when launching `" & "$env:USERPROFILE\..."`
       # because the payload was a `powershell -Command "$env:WT_SESSION=..; & ff"`

@@ -577,7 +577,11 @@ function global:Repair-FFSFetch {
     if ($rows -le 0) { $rows = 40 }
     [Console]::Write(("`n" * ($rows + 2)))
     try { [Console]::Clear() } catch { }
-    [Console]::Write("`e[3J`e[1;1H")
+    # `e is a PowerShell 7-only escape; profiles also run in Windows PowerShell
+    # 5.1, where it prints literally as "e[3J". Build the real ESC character
+    # explicitly so both shells send the control sequence to the terminal.
+    $clearScreen = [string][char]27 + '[3J' + [string][char]27 + '[1;1H'
+    [Console]::Write($clearScreen)
     Show-FFSFetch -Plan $Plan
 }
 
@@ -1881,7 +1885,8 @@ function Get-FFSProbeRows([int]$Height) {
     if (-not (Test-Path -LiteralPath $file)) { Say ('probe ' + $Height + ': file missing'); return 0 }
     $bytes = [IO.File]::ReadAllBytes($file)
     $out = [Console]::OpenStandardOutput()
-    [Console]::Write("`e[?1049h")
+    $enterAltScreen = [string][char]27 + '[?1049h'
+    [Console]::Write($enterAltScreen)
     Start-Sleep -Milliseconds 250
     $before = [int][Console]::CursorTop
     $out.Write($bytes, 0, $bytes.Length)
@@ -1890,7 +1895,8 @@ function Get-FFSProbeRows([int]$Height) {
     $after = [int][Console]::CursorTop
     $rows = $after - $before
     Say ('probe ' + $Height + 'px: rows ' + $before + ' -> ' + $after + ' = ' + $rows)
-    [Console]::Write("`e[?1049l")
+    $leaveAltScreen = [string][char]27 + '[?1049l'
+    [Console]::Write($leaveAltScreen)
     Start-Sleep -Milliseconds 250
     # A reading that stopped on the last row was clamped by the bottom of the
     # window and says nothing about the cell size.
