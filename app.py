@@ -1016,14 +1016,29 @@ function global:Show-FFSFetch {
             $fit = Get-FFSLogoFit -Path $Plan.Logo -Dir $Plan.SixelsDir `
                                   -Plan $Plan -Room $room -Rows $rowRoom
         } else {
-            $cell = Get-FFSCellPx -Plan $Plan
-            $px = @(Get-FFSRasterSize -Path $Plan.Logo)
-            if ($px[0] -gt 0 -and $px[1] -gt 0) {
-                $w = [int][Math]::Ceiling($px[0] / [double]$cell[0])
-                $h = [int][Math]::Ceiling($px[1] / [double]$cell[1])
-            }
-            if ($w -gt 0 -and $w -le $room -and $h -le $rowRoom) {
-                $fit = @{ W = $w; H = $h; Path = $Plan.Logo }
+            # kitty-direct hands the *PNG* to the terminal, which draws it into
+            # the cell box fastfetch declares - so here the declaration is the
+            # size, and the file's own raster is not consulted: a PNG declares
+            # none (read as a sixel it measured 0x0, and the logo vanished from
+            # every kitty and WezTerm window). The box is the configured one,
+            # scaled down when the room the frame leaves cannot hold it, and
+            # dropped when there is no room at all - a picture wider than the
+            # window is what wrapped the fetch over itself.
+            $w = [int]$Plan.W
+            $h = [int]$Plan.H
+            if ($w -gt 0 -and $h -gt 0) {
+                if ($w -gt $room -or $h -gt $rowRoom) {
+                    if ($room -lt 10 -or $rowRoom -lt 4) {
+                        $w = 0; $h = 0
+                    } else {
+                        $scale = [Math]::Min($room / [double]$w, $rowRoom / [double]$h)
+                        $w = [int][Math]::Max(4, [Math]::Round($w * $scale))
+                        $h = [int][Math]::Max(4, [Math]::Round($h * $scale))
+                    }
+                }
+                if ($w -gt 0 -and $h -gt 0) {
+                    $fit = @{ W = $w; H = $h; Path = $Plan.Logo }
+                }
             }
         }
         if (-not $fit) {
