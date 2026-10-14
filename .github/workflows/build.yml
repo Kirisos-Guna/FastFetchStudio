@@ -23,13 +23,16 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install pillow pyinstaller
+        run: pip install -r requirements-dev.txt
+
+      - name: Unit tests (pytest)
+        run: python -m pytest tests/ -v
+
+      - name: Lint (ruff)
+        run: python -m ruff check studio/ app.py tests/ --config ruff.toml
 
       - name: Build exe
-        run: >
-          pyinstaller --onefile --noconsole --name FastFetchStudio
-          --hidden-import tkinter --hidden-import PIL --hidden-import PIL.ImageTk
-          --collect-submodules PIL app.py
+        run: pyinstaller FastFetchStudio.spec
 
       - name: Smoke test (headless selftest)
         run: .\dist\FastFetchStudio.exe --selftest

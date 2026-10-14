@@ -3,11 +3,11 @@ rem FastFetch Studio - build a standalone FastFetchStudio.exe
 setlocal
 cd /d "%~dp0"
 
-python -m pip install --upgrade pillow pyinstaller || goto :err
+python -m pip install --upgrade -r requirements-dev.txt || goto :err
 
-python -m PyInstaller --onefile --noconsole --name FastFetchStudio ^
-  --hidden-import tkinter --hidden-import PIL --hidden-import PIL.ImageTk ^
-  --collect-submodules PIL app.py || goto :err
+python -m pytest tests/ -q || goto :err
+
+python -m PyInstaller FastFetchStudio.spec || goto :err
 
 echo.
 echo Done: %~dp0dist\FastFetchStudio.exe

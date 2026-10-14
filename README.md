@@ -297,15 +297,30 @@ If the policy is enforced by Group Policy, only your administrator can change it
 
 ## Build from source
 
-Requires Python 3.10+ on Windows.
+Requires Python 3.10+ on Windows (CI pins 3.12).
 
 ```bat
 build.bat
 ```
 
-That installs `pillow` + `pyinstaller` and produces `dist\FastFetchStudio.exe`
-(one portable file). The GitHub Actions workflow (`.github/workflows/build.yml`) builds
-and attaches the exe to releases automatically.
+That installs `requirements-dev.txt`, runs the pytest suite, and builds
+`dist\FastFetchStudio.exe` from `FastFetchStudio.spec` (one portable file,
+version single-sourced from `studio.__version__`). The GitHub Actions workflow
+(`.github/workflows/build.yml`) runs pytest + ruff, builds, and attaches the
+exe to releases automatically.
+
+Developer setup:
+
+```bat
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
+python -m ruff check studio/ app.py tests/ --config ruff.toml
+```
+
+Core logic lives in `studio/` (`state`, `config_build`, `themes`, `images`,
+`encode`, `launcher`, `metrics`, `preview`); `app.py` is the thin tkinter shell
+keeping the `app.generate_launcher` / `app.write_preview_script` /
+`app.preview_argv` compatibility used by CI probes.
 
 ## Uninstall
 

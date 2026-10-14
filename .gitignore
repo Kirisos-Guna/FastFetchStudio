@@ -19,3 +19,8 @@ Thumbs.db
 
 # Assistant workspace state
 .workbuddy-ai/
+
+# Assistant workspace state
+.freebuff/
+.pytest_cache/
+.ruff_cache/
