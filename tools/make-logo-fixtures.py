@@ -33,7 +33,8 @@ def main() -> int:
 
     cells_w, cells_h = (int(v) for v in args.cells.lower().split("x"))
     color = tuple(int(args.color[i:i + 2], 16) for i in (0, 2, 4)) + (255,)
-    cell_px = {"cellW": app.CELL_PX_DEFAULT[0], "cellH": app.CELL_PX_DEFAULT[1]}
+    cw, ch = app.logo_cell_px({})
+    cell_px = {"cellW": cw, "cellH": ch}
     # The picture fills the cells it is given, one column short of them, exactly
     # as a user's image does.
     img = Image.new("RGBA", ((cells_w - app.LOGO_SLACK_COLS) * cell_px["cellW"],
