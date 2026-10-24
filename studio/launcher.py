@@ -77,6 +77,26 @@ function global:Invoke-FFSExe {
     } catch { }
 }
 
+function global:Get-FFSCursorRow {
+    # The cursor's row, or -1 when there is no console to ask.
+    try { return [int][Console]::CursorTop } catch { return -1 }
+}
+
+function global:Complete-FFSLogoRows {
+    # Put the cursor under the picture when the fetch's text was shorter than it.
+    # fastfetch is run with --logo-print-remaining false (its padding lines are
+    # written over the picture and tear it), so after a short fetch the cursor
+    # sits beside the picture's lower rows, and the prompt printed there cut the
+    # picture off flat. A bare line feed only moves the cursor - no cell is
+    # written, so no sixel pixel is erased.
+    param([int]$Top, [int]$Rows)
+    if ($Top -lt 0 -or $Rows -le 0) { return }
+    $now = Get-FFSCursorRow
+    if ($now -lt 0) { return }
+    $used = $now - $Top
+    if ($used -ge 0 -and $used -lt $Rows) { [Console]::Write("`n" * ($Rows - $used)) }
+}
+
 function global:Wait-FFSGridSettled {
     # Windows Terminal starts every shell at its default grid (120 x 30, or a
     # share of it for a split pane) and only resizes it to the real window a
@@ -614,6 +634,7 @@ function global:Show-FFSFetch {
     $retry = @()
     $w = 0
     $h = 0
+    $pad = 0
     if ($Plan.Kind -eq 'sixel' -or $Plan.Kind -eq 'kitty') {
         # Which *file* to draw, and what to tell fastfetch about it.
         #
@@ -628,8 +649,9 @@ function global:Show-FFSFetch {
         # largest one this window can hold wins.
         $fit = $null
         if ($Plan.Kind -eq 'sixel') {
+            # One row less: the picture is drawn a row down (--logo-padding-top).
             $fit = Get-FFSLogoFit -Path $Plan.Logo -Dir $Plan.SixelsDir `
-                                  -Plan $Plan -Room $room -Rows $rowRoom
+                                  -Plan $Plan -Room $room -Rows ($rowRoom - 1)
         } else {
             # kitty-direct hands the *PNG* to the terminal, which draws it into
             # the cell box fastfetch declares - so here the declaration is the
@@ -672,9 +694,19 @@ function global:Show-FFSFetch {
             # logo out to logo-height lines when the key list is shorter than
             # the picture, and those blank lines are written over the picture's
             # own rows - the other half of the banding.
+            #
+            # --logo-padding-top 1 lines the text up with the picture. After a
+            # raw logo fastfetch prints a newline and then moves up logo-height
+            # rows, which assumes the image left the cursor on its own last row;
+            # Windows Terminal leaves it on the row *below* (measured: an N-row
+            # sixel moves the cursor exactly N rows), so the text started one
+            # row under the picture's top. The padding newline puts the picture
+            # one row down and fastfetch counts it in the move up, which lands
+            # the first line of text on the picture's first row.
             $logo  = @('--logo-type', 'raw', '--logo', $fit.Path,
                        '--logo-width', $w, '--logo-height', $h,
-                       '--logo-print-remaining', 'false')
+                       '--logo-print-remaining', 'false', '--logo-padding-top', '1')
+            $pad = 1
             $retry = @('--logo', 'Windows11')
         } else {
             $w = [int]$fit.W
@@ -709,7 +741,9 @@ function global:Show-FFSFetch {
         $ffRetry += $Plan.Color
         $ffRetry += $Plan.Fit
     }
+    $top = Get-FFSCursorRow
     Invoke-FFSRun -Plan $Plan -FFArgs $ffArgs -FFRetry $ffRetry
+    if ($w -gt 0) { Complete-FFSLogoRows -Top $top -Rows ($h + $pad) }
     # What this draw actually did: the window it found, the room it had, the file
     # it chose and the size it told fastfetch. Written every time, so "my logo is
     # missing" (or smaller than it used to be) can be explained from a file
