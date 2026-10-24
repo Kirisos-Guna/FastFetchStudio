@@ -99,12 +99,18 @@ the same fetch (same logo, theme and window fitting) through the PowerShell laun
 it once from PowerShell:
 
 ```powershell
-Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Command Processor' -Name AutoRun -Value '@if exist "%USERPROFILE%\.config\fastfetch\fastfetch-cmd.cmd" call "%USERPROFILE%\.config\fastfetch\fastfetch-cmd.cmd"'
+$key  = 'HKCU:\Software\Microsoft\Command Processor'
+$hook = '@if exist "%USERPROFILE%\.config\fastfetch\fastfetch-cmd.cmd" call "%USERPROFILE%\.config\fastfetch\fastfetch-cmd.cmd"'
+if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }   # absent on a fresh account
+$old = (Get-ItemProperty -Path $key -Name AutoRun -ErrorAction SilentlyContinue).AutoRun
+if ($old -match 'fastfetch-cmd') { $hook = $old }                 # already there: leave it be
+elseif ($old) { $hook = "$old & $hook" }                           # keep Clink, Conda, ...
+Set-ItemProperty -Path $key -Name AutoRun -Value $hook
 ```
 
-If that key does not exist yet, create it first with
-`New-Item -Path 'HKCU:\Software\Microsoft\Command Processor' -Force`. If `AutoRun` already
-holds something (Clink, Conda), append ` & ` and the line above instead of replacing it.
+Safe to re-run: an existing `AutoRun` (Clink, Conda) is kept and the hook chained after it, and
+a second run does not add the hook twice. The key is created only when it is missing:
+`New-Item -Force` on a key that already exists would wipe the values in it.
 
 - **Only interactive windows draw.** `AutoRun` also runs for every `cmd /c …` that scripts, git
   hooks and build tools start in the background; the hook skips those, so their output stays
