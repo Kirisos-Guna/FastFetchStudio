@@ -8,8 +8,11 @@ def test_fastfetch_never_called_through_the_pipeline():
     # prompt string (OEM-decoded mojibake, the sixel lost).
     for src in (LAUNCHER_TEMPLATE, RESIZE_GUARD_TEMPLATE, PREVIEW_TEMPLATE):
         assert "& $Plan.Exe" not in src
-    assert "Invoke-FFSExe -Exe $Plan.Exe" in LAUNCHER_TEMPLATE
-    assert "Invoke-FFSExe -Exe $Plan.Exe" in PREVIEW_TEMPLATE
+    # The exact statement the CI probes in build.yml swap for a log write: if
+    # it changes, their swap silently matches nothing and the probes test the
+    # real (missing) fastfetch instead.
+    assert LAUNCHER_TEMPLATE.count("Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a") == 1
+    assert PREVIEW_TEMPLATE.count("Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a") == 1
 
 
 def test_first_draw_waits_for_the_real_window_size():

@@ -94,12 +94,12 @@ jobs:
           $inv   = Join-Path $env:TEMP 'launcher-inv.txt'
           $log   = "Add-Content -LiteralPath '$inv' -Value 'run'`n`$global:LASTEXITCODE = [int]`$env:FF_RC"
           $src = Get-Content -LiteralPath $launcher -Raw
-          $src = $src.Replace('& $Plan.Exe @a', $log)
+          $src = $src.Replace('Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a', $log)
           # The swap matches the whole invocation, so renaming its variables or
           # moving the call silently stops it matching - and the leftover text is
           # a *parse* error in the probe, which then surfaces as some unrelated
           # assertion failing. Fail here instead.
-          if ($src -match '& \$Plan\.Exe') { throw 'the launcher invocation was not swapped out for the probe' }
+          if ($src -match 'Invoke-FFSExe -Exe \$Plan\.Exe') { throw 'the launcher invocation was not swapped out for the probe' }
           Set-Content -LiteralPath $probe -Value $src
 
           function Count-Runs([int]$rc) {
@@ -225,7 +225,7 @@ jobs:
           # probe logs the arguments it was handed and the cases match on those.
           $probe = Join-Path $env:TEMP 'logo-probe.ps1'
           $src = Get-Content -LiteralPath $launcher -Raw
-          $src = $src.Replace('& $Plan.Exe @a',
+          $src = $src.Replace('Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a',
                               "Add-Content -LiteralPath `$env:FF_LOG -Value (`$a -join ' ')")
           Set-Content -LiteralPath $probe -Value $src
           # The branch each host takes must not depend on how wide the runner's
@@ -354,7 +354,7 @@ jobs:
           # border on the next row, long values split in half, the logo
           # overlapped. The launcher now gives the logo only what is left after
           # the frame, and refuses to let fastfetch wrap at all.
-          $calls = @($body -split "`n" | Where-Object { $_ -match '^\s*& \$Plan\.Exe' })
+          $calls = @($body -split "`n" | Where-Object { $_ -match '^\s*Invoke-FFSExe -Exe \$Plan\.Exe' })
           if ($calls.Count -ne 1) { throw "expected one fastfetch invocation site, found $($calls.Count)" }
           if ($body -notmatch '--disable-linewrap') { throw 'the launcher never refuses line wrapping' }
           if ($body -notmatch '\$ffArgs \+= \$Plan\.Fit') { throw 'the draw does not refuse line wrapping' }
@@ -369,9 +369,9 @@ jobs:
           # pair "fits" on paper while the frame's corner is still pushed three
           # columns off the edge - measured in a real 71-column window.
           $fitProbe = Join-Path $env:TEMP 'logo-probe-fit.ps1'
-          $fitBase = $body.Replace('& $Plan.Exe @a',
+          $fitBase = $body.Replace('Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a',
                                    "Add-Content -LiteralPath `$env:FF_LOG -Value (`$a -join ' ')")
-          if ($fitBase -match '& \$Plan\.Exe') { throw 'the launcher invocation was not swapped out for the fit probe' }
+          if ($fitBase -match 'Invoke-FFSExe -Exe \$Plan\.Exe') { throw 'the launcher invocation was not swapped out for the fit probe' }
 
           # Room is cols - 46 (frame) - 1 - 4 (fastfetch's logo padding), and the
           # ladder is 28x24, 24x21, 20x17, 16x14, 12x11 for the 28x24 fixture.
@@ -452,7 +452,7 @@ jobs:
             # a repair that skips it would draw a second fetch under a broken one.
             $src = $src.Replace('$c = [int][Console]::WindowWidth; $r = [int][Console]::WindowHeight',
                                 ('$c = ' + $FirstCols + '; $r = 40'))
-            $src = $src.Replace('& $Plan.Exe @a',
+            $src = $src.Replace('Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a',
                                 "Add-Content -LiteralPath `$env:FF_LOG -Value (`$a -join ' ')")
             $src = $src.Replace('try { [Console]::Clear() } catch { }',
                                 "Add-Content -LiteralPath `$env:FF_LOG -Value 'erase'")
@@ -606,9 +606,9 @@ jobs:
           $probe = Join-Path $env:TEMP 'preview-probe.ps1'
           $log = Join-Path $env:TEMP 'preview-log.txt'
           $src = Get-Content -LiteralPath $script -Raw
-          $src = $src.Replace('& $Plan.Exe @a',
+          $src = $src.Replace('Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a',
                               "Add-Content -LiteralPath `$env:FF_LOG -Value (`$a -join ' ')")
-          if ($src -match '& \$Plan\.Exe') { throw 'the preview invocation was not swapped out for the probe' }
+          if ($src -match 'Invoke-FFSExe -Exe \$Plan\.Exe') { throw 'the preview invocation was not swapped out for the probe' }
 
           # The draw has to refuse line wrapping: fastfetch cannot know a frame
           # is drawn beside the text, so a row longer than the window wraps and
@@ -742,7 +742,7 @@ jobs:
           if ($src -notmatch 'Install-FFSResizeGuard') { throw 'preview.ps1 has no resize guard' }
           $src = $src.Replace('$c = [int][Console]::WindowWidth; $r = [int][Console]::WindowHeight',
                               '$c = 120; $r = 40')
-          $src = $src.Replace('& $Plan.Exe @a',
+          $src = $src.Replace('Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a',
                               "Add-Content -LiteralPath `$env:FF_LOG -Value (`$a -join ' ')")
           $src = $src.Replace('try { [Console]::Clear() } catch { }',
                               "Add-Content -LiteralPath `$env:FF_LOG -Value 'erase'")
