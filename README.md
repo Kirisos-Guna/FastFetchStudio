@@ -66,6 +66,7 @@ options, verification, and uninstall.
 | `~\.config\fastfetch\config.jsonc` | main fastfetch config (original backed up once to `config.backup.jsonc`) |
 | `~\.config\fastfetch\themes\theme-01..08.jsonc` | the 8 palettes |
 | `~\.config\fastfetch\fastfetch-random.ps1` | picks a random theme + logo each run, draws once per shell session, and redraws that same fetch when the window changes size (see [Alt+Enter tears the logo](#altenter-or-any-resize-tears-the-logo-into-bands)). It detects the terminal first — sixel on Windows Terminal (1.22+), WezTerm, foot, contour, mlterm, yaft; the kitty protocol on kitty, WezTerm and Ghostty; block art from `arts\` anywhere else; fastfetch's tinted ASCII logo as the last resort. Written by **Apply & Generate**; `setup.ps1` writes a plain bootstrap here so the profile hook works before the app has ever run |
+| `~\.config\fastfetch\fastfetch-cmd.cmd` | the Command Prompt hook: runs the same launcher from an interactive `cmd.exe` window (see [Show it in Command Prompt too](#show-it-in-command-prompt-too)) |
 | `~\.config\fastfetch\arts\*.art` | your logos pre-rendered as truecolour block art, for terminals that can display no image protocol |
 | `~\.config\fastfetch\gui\studio-state.json` | app state (gallery, colors, settings) |
 | `~\.config\fastfetch\gui\preview.ps1` | the payload the **Preview in terminal** button runs; regenerated on every click |
@@ -89,6 +90,31 @@ A copy-pasteable snippet with a Copy button is also available inside the app (Th
 
 Or let [setup.ps1](SETUP.md) do the download, the profile edit, *and* write the launcher for
 you — including PowerShell 7+, which the app itself does not configure.
+
+## Show it in Command Prompt too
+
+`cmd.exe` has no profile script, but it runs the per-user `AutoRun` command at the start of
+every session. **Apply & Generate** writes `~\.config\fastfetch\fastfetch-cmd.cmd`, which draws
+the same fetch (same logo, theme and window fitting) through the PowerShell launcher. Register
+it once from PowerShell:
+
+```powershell
+Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Command Processor' -Name AutoRun -Value '@if exist "%USERPROFILE%\.config\fastfetch\fastfetch-cmd.cmd" call "%USERPROFILE%\.config\fastfetch\fastfetch-cmd.cmd"'
+```
+
+If that key does not exist yet, create it first with
+`New-Item -Path 'HKCU:\Software\Microsoft\Command Processor' -Force`. If `AutoRun` already
+holds something (Clink, Conda), append ` & ` and the line above instead of replacing it.
+
+- **Only interactive windows draw.** `AutoRun` also runs for every `cmd /c …` that scripts, git
+  hooks and build tools start in the background; the hook skips those, so their output stays
+  clean. `cmd /k` and a plain `cmd` window draw.
+- **No `@echo off`.** AutoRun runs inside the interactive shell, so turning echo off there would
+  hide the prompt for the whole session; every line of the hook carries its own `@` instead.
+- **Turn it off** for one window with `set FASTFETCH_STUDIO_DISABLE=1` before starting a nested
+  `cmd`, or for good with
+  `Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Command Processor' -Name AutoRun`.
+- It costs a PowerShell start (about half a second) per new Command Prompt window.
 
 ### My logo doesn't show — I get the ASCII Windows logo
 
@@ -339,9 +365,10 @@ keeping the `app.generate_launcher` / `app.write_preview_script` /
 (add `-RemoveBinary` to delete the fastfetch binary too). It leaves a launcher that
 FastFetch Studio generated, since that is your own configuration.
 
-To do it by hand: delete `~\.config\fastfetch\themes\`, `fastfetch-random.ps1`, the `gui\`
-folder, and restore `config.backup.jsonc` over `config.jsonc`. Uploaded images stay in
-`pngs\`.
+To do it by hand: delete `~\.config\fastfetch\themes\`, `fastfetch-random.ps1`,
+`fastfetch-cmd.cmd`, the `gui\` folder, and restore `config.backup.jsonc` over `config.jsonc`.
+Uploaded images stay in `pngs\`. If you registered the Command Prompt hook, also remove its
+`AutoRun` value (see [Show it in Command Prompt too](#show-it-in-command-prompt-too)).
 
 ## License
 

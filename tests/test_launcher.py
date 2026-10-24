@@ -28,3 +28,17 @@ def test_repair_runs_when_idle_but_spares_command_output():
     assert "PowerShell.OnIdle" in RESIZE_GUARD_TEMPLATE
     assert "Get-History -Count 1" in RESIZE_GUARD_TEMPLATE
     assert "GetBufferState" in RESIZE_GUARD_TEMPLATE
+
+
+def test_cmd_hook_is_quiet_outside_an_interactive_window():
+    from studio.launcher import CMD_HOOK_TEMPLATE
+
+    lines = [ln for ln in CMD_HOOK_TEMPLATE.splitlines() if ln.strip()]
+    # "echo off" in an AutoRun script would hide the prompt for the session.
+    assert not any("echo off" in ln.lower() for ln in lines)
+    assert all(ln.startswith(("@", ":")) for ln in lines)
+    # "cmd /c" from scripts and tools must not get a fetch in its output; the
+    # quotes are stripped first or the comparison silently never matches.
+    assert '@set "FFS_CL=!CMDCMDLINE:"=!"' in CMD_HOOK_TEMPLATE
+    assert '"!FFS_CL:/c=!"=="!FFS_CL!" goto :ffs_done' in CMD_HOOK_TEMPLATE
+    assert "fastfetch-random.ps1" in CMD_HOOK_TEMPLATE
