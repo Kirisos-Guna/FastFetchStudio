@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for FastFetch Studio 1.0.2 (single-file, no console)."""
+"""PyInstaller spec for FastFetch Studio 1.0.3 (single-file, no console)."""
 from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
