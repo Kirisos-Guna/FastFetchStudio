@@ -231,9 +231,16 @@ picture, re-fitted to the new window by picking from the size ladder.
 - **On by default.** *Random* tab → **Re-draw the fetch when the window is resized**. With it off,
   a resized window keeps the torn picture until a new terminal is opened. Either way only the
   visible screen is erased; the scrollback above it is left alone.
-- **The repair lands at the next prompt** — press Enter, or let a command finish. For the
-  impatient, `Redraw-Fetch` in that shell does it immediately; the generated launcher defines it,
-  so it is there whenever the fetch is.
+- **The repair happens on its own** — within about half a second of the window settling at its new
+  size, while the prompt sits idle (PSReadLine's idle event); nothing has to be typed. It never
+  touches a half-typed command line, and it stops once you have run a command, so a resize
+  can never wipe a command's output to redraw a logo. `Redraw-Fetch` brings the fetch back by
+  hand at any time; the generated launcher defines it, so it is there whenever the fetch is.
+- **A new window is measured once it has its real size.** Windows Terminal starts every shell at
+  its default 120 × 30 grid and resizes it a few hundred milliseconds later (sooner or later with
+  a remembered size, a snapped window or a tiling tool). The first draw waits for that, at the
+  first prompt rather than in the profile, so PowerShell 5.1's "Loading personal and system
+  profiles took …ms" note is not triggered by it.
 - **The preview window repairs itself too**, so the window you resize while testing behaves like the
   real one.
 - **A resize never re-randomizes.** It redraws the theme and picture that shell already had, so a

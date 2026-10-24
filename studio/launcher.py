@@ -42,6 +42,149 @@ function global:Redraw-Fetch {
     if ($global:FFSPlan) { Repair-FFSFetch -Plan $global:FFSPlan }
 }
 
+function global:Invoke-FFSExe {
+    # Run fastfetch with the console as its own stdout, and return its exit code.
+    #
+    # Not "& $exe": a native command called that way only writes to the screen
+    # when its pipeline ends at the host. Called from inside the prompt function
+    # (where the resize repair and the deferred first draw run) its output is
+    # captured instead and becomes the prompt *string*, decoded through the OEM
+    # code page on the way - the frame came out as cp437 mojibake and the sixel as
+    # noise, or the picture alone with no text. From an event action it is
+    # swallowed entirely. A child process started without redirection inherits
+    # the console and writes to it directly, wherever it is called from.
+    param([string]$Exe, [string[]]$FFArgs)
+    $quoted = foreach ($a in $FFArgs) {
+        $a = [string]$a
+        if ($a -and $a -notmatch '[\s"]') { $a; continue }
+        # CommandLineToArgvW rules: double the backslashes before a quote or the
+        # closing quote, escape the quote itself.
+        '"' + (($a -replace '(\*)"', '$1$1\"') -replace '(\+)$', '$1$1') + '"'
+    }
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe
+    $psi.Arguments = ($quoted -join ' ')
+    $psi.UseShellExecute = $false
+    try {
+        $proc = [Diagnostics.Process]::Start($psi)
+        $proc.WaitForExit()
+        return $proc.ExitCode
+    } catch { return $null }
+}
+
+function global:Wait-FFSGridSettled {
+    # Windows Terminal starts every shell at its default grid (120 x 30, or a
+    # share of it for a split pane) and only resizes it to the real window a
+    # few hundred milliseconds later - measured at 580-670 ms after the shell
+    # process started, with the profile already running. A tiling tool or a
+    # snapped/remembered window size lands even later. Drawing at the first size
+    # laid the fetch out for 120 columns in a 70-column window; the terminal
+    # then re-wrapped every row over the picture, which is the banded logo with
+    # stray "741.0" / "GB)" tails at the left edge.
+    #
+    # So the first draw waits until the shell is old enough for that resize to
+    # have landed and the grid has held still for a moment. A profile that is
+    # already slower than that waits for nothing; the cap keeps a shell whose
+    # window keeps changing from hanging.
+    $start = $null
+    try { $start = (Get-Process -Id $PID).StartTime } catch { }
+    if (-not $start) { return }
+    $last = Get-FFSGrid
+    if ([int]$last[0] -le 0) { return }
+    $first = $last
+    $since = [DateTime]::Now
+    while ($true) {
+        $now = [DateTime]::Now
+        $g = Get-FFSGrid
+        if ([int]$g[0] -ne [int]$last[0] -or [int]$g[1] -ne [int]$last[1]) {
+            $last = $g; $since = $now
+        }
+        $age = ($now - $start).TotalMilliseconds
+        $still = ($now - $since).TotalMilliseconds
+        if ($age -ge 1500) { return }
+        if ($still -ge 150) {
+            if ($age -ge 900) { return }
+            # The resize already came: no reason to sit out the rest.
+            if ([int]$last[0] -ne [int]$first[0] -or [int]$last[1] -ne [int]$first[1]) { return }
+        }
+        Start-Sleep -Milliseconds 20
+    }
+}
+
+function global:Test-FFSNeedsRepair {
+    # True when the window no longer matches the grid the fetch was drawn at
+    # *and* the fetch is still the last thing on the screen. The repair clears
+    # the screen, so once a command has run it would wipe that command's output
+    # to redraw a logo - from then on a resize is left alone, and Redraw-Fetch
+    # is there for anyone who wants the fetch back.
+    $plan = $global:FFSPlan
+    if (-not $plan -or -not $plan.Redraw) { return $false }
+    $last = Get-History -Count 1
+    if ($last -and [int]$last.Id -gt [int]$plan.HistoryId) {
+        $plan.Redraw = $false
+        if ($global:FFSIdleJob) {
+            try { Unregister-Event -SourceIdentifier $global:FFSIdleJob.Name } catch { }
+            try { Remove-Job -Job $global:FFSIdleJob -Force } catch { }
+            $global:FFSIdleJob = $null
+        }
+        return $false
+    }
+    $now = Get-FFSGrid
+    if ([int]$now[0] -le 0) { return $false }
+    return ([int]$now[0] -ne [int]$plan.Grid[0] -or [int]$now[1] -ne [int]$plan.Grid[1])
+}
+
+function global:Restore-FFSPrompt {
+    # Put the prompt back under a fetch drawn while PSReadLine was waiting for
+    # input. InvokePrompt() redraws the prompt at the row PSReadLine remembered
+    # from before - which the redraw has just painted over, so the prompt ended
+    # up hidden inside the fetch (or scrolled away) and typing landed there too.
+    # Point PSReadLine at the row the cursor is on now, then let it redraw. The
+    # field is private, so every step is allowed to fail: the worst case is the
+    # old behaviour.
+    try {
+        $t = [Microsoft.PowerShell.PSConsoleReadLine]
+        $rl = $t.GetField('_singleton', 'NonPublic,Static').GetValue($null)
+        $t.GetField('_initialY', 'NonPublic,Instance').SetValue($rl, [int][Console]::CursorTop)
+    } catch { }
+    try { [Microsoft.PowerShell.PSConsoleReadLine]::InvokePrompt() } catch { }
+}
+
+function global:Invoke-FFSIdleRepair {
+    # Repair a resize while the prompt just sits there, instead of waiting for
+    # Enter: snapping or tiling a fresh window, or Alt+Enter, otherwise leaves
+    # the torn fetch on screen until the user types something. PSReadLine raises
+    # OnIdle about every 300 ms while it waits for input.
+    $plan = $global:FFSPlan
+    if (-not $plan) { return }
+    if ($plan.Deferred) {
+        # The first draw was handed to the prompt, but the prompt was replaced
+        # after the launcher ran (a theme engine set up later in the profile),
+        # so it never happened. Draw it now, over the empty screen.
+        $plan.Deferred = $false
+        try { [Console]::Clear() } catch { }
+        [Console]::Write([string][char]27 + '[3J' + [string][char]27 + '[1;1H')
+        Wait-FFSGridSettled
+        Show-FFSFetch -Plan $plan
+        Restore-FFSPrompt
+        return
+    }
+    if (-not (Test-FFSNeedsRepair)) { $plan.Pending = $null; return }
+    # Never wipe a half-typed command line.
+    $line = $null; $cursor = $null
+    try { [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor) } catch { return }
+    if ($line) { return }
+    # A window being dragged changes size on every tick; wait until it has
+    # held one size for two ticks in a row, so the fetch is drawn once at the
+    # end rather than at every step of the drag.
+    $now = Get-FFSGrid
+    $key = '' + $now[0] + 'x' + $now[1]
+    if ($plan.Pending -ne $key) { $plan.Pending = $key; return }
+    $plan.Pending = $null
+    Repair-FFSFetch -Plan $plan
+    Restore-FFSPrompt
+}
+
 function global:Install-FFSResizeGuard {
     if ($global:FFSGuardInstalled) { return }
     $grid = Get-FFSGrid
@@ -59,16 +202,28 @@ function global:Install-FFSResizeGuard {
     function global:prompt {
         try {
             $plan = $global:FFSPlan
-            if ($plan -and $plan.Redraw) {
-                $now = Get-FFSGrid
-                if ([int]$now[0] -gt 0 -and
-                    ([int]$now[0] -ne [int]$plan.Grid[0] -or [int]$now[1] -ne [int]$plan.Grid[1])) {
-                    Repair-FFSFetch -Plan $plan
-                }
+            if ($plan -and $plan.Deferred) {
+                # The launcher left the first draw to here (see its last lines):
+                # the wait no longer counts as profile time, and the fetch still
+                # lands right above the first prompt.
+                $plan.Deferred = $false
+                Wait-FFSGridSettled
+                Show-FFSFetch -Plan $plan
+            } elseif (Test-FFSNeedsRepair) {
+                Repair-FFSFetch -Plan $plan
             }
         } catch { }
         if ($global:FFSPrevPrompt) { & $global:FFSPrevPrompt }
         else { "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) " }
+    }
+    # Only where PSReadLine is the line editor: it is what raises OnIdle and
+    # what can redraw the prompt afterwards.
+    $plan = $global:FFSPlan
+    if ($plan -and ($plan.Redraw -or $plan.Deferred) -and (Get-Module PSReadLine)) {
+        try {
+            $global:FFSIdleJob = Register-EngineEvent -SourceIdentifier PowerShell.OnIdle `
+                -Action { Invoke-FFSIdleRepair } -ErrorAction Stop
+        } catch { }
     }
 }
 """
@@ -408,8 +563,7 @@ function global:Invoke-FFSRun {
     $attempts = @(,$FFArgs)
     if ($FFRetry) { $attempts += ,$FFRetry }
     foreach ($a in $attempts) {
-        & $Plan.Exe @a
-        $ffRc = $LASTEXITCODE
+        $ffRc = Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a
         if ($null -eq $ffRc -or $ffRc -eq 0) { return }
     }
 }
@@ -682,6 +836,11 @@ $global:FFSPlan = @{
     Redraw     = $redrawOnResize
     Grid       = @(0, 0)
     Rows       = 0
+    # The last command in history when the fetch was drawn: a newer one means
+    # the fetch has scrolled into the past and a resize must not redraw it.
+    HistoryId  = [int](@(Get-History -Count 1) | ForEach-Object { $_.Id } | Select-Object -First 1)
+    Pending    = $null
+    Deferred   = $false
     # Carried in the plan rather than read from the script scope inside
     # Show-FFSFetch: the repair runs from the prompt, long after this script's
     # own scope is gone, and a script-scoped path would be empty by then.
@@ -694,8 +853,33 @@ $global:FFSPlan = @{
 
 # Draw it, then keep it straight: a resize that comes later is noticed by the
 # prompt, which redraws this same fetch at the new size.
-Show-FFSFetch -Plan $global:FFSPlan
-if ($redrawOnResize) { Install-FFSResizeGuard }
+#
+# A shell that has only just started does not have its real window size yet
+# (see Wait-FFSGridSettled), so the first draw waits for it. Waiting here, in
+# the profile, made Windows PowerShell print "Loading personal and system
+# profiles took 687ms" under every fetch, so a fresh interactive shell hands the
+# draw to its first prompt instead - which is the very next thing it does.
+# Anything else (a script, -Command, a shell that has been up a while) draws
+# right away.
+function Test-FFSDeferFirstDraw {
+    if ([int](Get-FFSGrid)[0] -le 0) { return $false }
+    try {
+        $age = ((Get-Date) - (Get-Process -Id $PID).StartTime).TotalMilliseconds
+        if ($age -ge 1500) { return $false }
+    } catch { return $false }
+    $argv = @([Environment]::GetCommandLineArgs() | Select-Object -Skip 1)
+    $noExit = @($argv | Where-Object { $_ -match '^[-/]noe' }).Count -gt 0
+    $batch  = @($argv | Where-Object { $_ -match '^[-/](c|command|f|file|e|encodedcommand|noni|noninteractive)' }).Count -gt 0
+    return ($noExit -or -not $batch)
+}
+if (Test-FFSDeferFirstDraw) {
+    $global:FFSPlan.Deferred = $true
+    Install-FFSResizeGuard
+} else {
+    Wait-FFSGridSettled
+    Show-FFSFetch -Plan $global:FFSPlan
+    if ($redrawOnResize) { Install-FFSResizeGuard }
+}
 
 # Remember the day. Without this the 'daily' check above could never match, so
 # "Once per day (same look all day)" silently behaved like "every window".
