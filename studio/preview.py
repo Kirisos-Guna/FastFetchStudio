@@ -179,7 +179,7 @@ function global:Invoke-FFSRun {
     # Same shape as the launcher's, minus the fallback: a preview has nothing to
     # fall back to, so what it draws is what the launcher would draw.
     param([hashtable]$Plan, [string[]]$FFArgs, [string[]]$FFRetry)
-    foreach ($a in @(,$FFArgs)) { $null = Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a }
+    foreach ($a in @(,$FFArgs)) { Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a }
 }
 
 function global:Show-FFSFetch {

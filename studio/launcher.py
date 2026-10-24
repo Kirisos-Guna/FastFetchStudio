@@ -53,6 +53,10 @@ function global:Invoke-FFSExe {
     # noise, or the picture alone with no text. From an event action it is
     # swallowed entirely. A child process started without redirection inherits
     # the console and writes to it directly, wherever it is called from.
+    #
+    # The exit code goes to $LASTEXITCODE, as it would for "& $exe", so callers
+    # read it the same way - and the CI probes can swap this one statement for a
+    # log write that sets it.
     param([string]$Exe, [string[]]$FFArgs)
     $quoted = foreach ($a in $FFArgs) {
         $a = [string]$a
@@ -65,11 +69,12 @@ function global:Invoke-FFSExe {
     $psi.FileName = $Exe
     $psi.Arguments = ($quoted -join ' ')
     $psi.UseShellExecute = $false
+    $global:LASTEXITCODE = $null
     try {
         $proc = [Diagnostics.Process]::Start($psi)
         $proc.WaitForExit()
-        return $proc.ExitCode
-    } catch { return $null }
+        $global:LASTEXITCODE = $proc.ExitCode
+    } catch { }
 }
 
 function global:Wait-FFSGridSettled {
@@ -563,7 +568,8 @@ function global:Invoke-FFSRun {
     $attempts = @(,$FFArgs)
     if ($FFRetry) { $attempts += ,$FFRetry }
     foreach ($a in $attempts) {
-        $ffRc = Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a
+        Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a
+        $ffRc = $LASTEXITCODE
         if ($null -eq $ffRc -or $ffRc -eq 0) { return }
     }
 }
