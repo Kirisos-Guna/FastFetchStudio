@@ -374,7 +374,9 @@ jobs:
           if ($fitBase -match 'Invoke-FFSExe -Exe \$Plan\.Exe') { throw 'the launcher invocation was not swapped out for the fit probe' }
 
           # Room is cols - 46 (frame) - 1 - 4 (fastfetch's logo padding), and the
-          # ladder is 28x24, 24x21, 20x17, 16x14, 12x11 for the 28x24 fixture.
+          # ladder is 28x24, 24x21, 20x17, 16x14, 12x10 for the 28x24 fixture (the
+          # smallest step's picture paints 10 of its 11 rows, and the canvas is
+          # trimmed to the rows a picture paints).
           # Fitting means *choosing a smaller file*: --logo-width is the chosen
           # file's real cell count, never a number rewritten to fit, because a
           # number that disagrees with the raster is what put the fetch's text
@@ -384,7 +386,7 @@ jobs:
             @{ cols =  80; want = '--logo-width 28 --logo-height 24' },   # room 29
             @{ cols =  75; want = '--logo-width 24 --logo-height 21' },   # room 24 - one step down
             @{ cols =  74; want = '--logo-width 20 --logo-height 17' },   # room 23 - and another
-            @{ cols =  64; want = '--logo-width 12 --logo-height 11' },   # room 13
+            @{ cols =  64; want = '--logo-width 12 --logo-height 10' },   # room 13
             @{ cols =  61; want = '--logo none' },                        # room 10 - nothing fits
             @{ cols =  59; want = '--logo none' }                         # room 8
           )
@@ -490,7 +492,7 @@ jobs:
           $off = '{"randomLogo":true,"randomTheme":true,"logWidth":28,"logHeight":24,"redrawOnResize":false}'
 
           # 120 columns -> 64: the logo is re-fitted to the room that leaves
-          # (28x24 -> the 12x11 step of the ladder), the torn copy is erased, and
+          # (28x24 -> the 12x10 step of the ladder), the torn copy is erased, and
           # the theme and picture are the same ones.
           $r = Resized $on
           $draws = @($r.After | Where-Object { $_ -match '--logo' })
@@ -498,9 +500,9 @@ jobs:
           if ($draws.Count -ne 2) { throw "expected the first draw plus one repair, got $($draws.Count)" }
           if ($draws[0] -notmatch '--logo-width 28 --logo-height 24') { throw "first draw wrong: $($draws[0])" }
           if (-not ($r.After | Where-Object { $_ -eq 'erase' })) { throw 'the torn copy was never erased' }
-          # 64 columns leaves room 13, so the repair draws the 12x11 step of the
+          # 64 columns leaves room 13, so the repair draws the 12x10 step of the
           # ladder - a different file, the same picture.
-          if ($draws[1] -notmatch '--logo-width 12 --logo-height 11') { throw "the repair drew the wrong size: $($draws[1])" }
+          if ($draws[1] -notmatch '--logo-width 12 --logo-height 10') { throw "the repair drew the wrong size: $($draws[1])" }
           if (($draws[0] -split ' --')[0] -ne ($draws[1] -split ' --')[0]) {
             throw 'the theme changed on resize; a resize is not a new shell'
           }

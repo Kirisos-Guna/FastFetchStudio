@@ -213,8 +213,10 @@ function global:Show-FFSFetch {
     # Show-FFSFetch in the launcher); a smaller file is what "fitting" means.
     $fit = $null
     if (-not $Plan.BlockArt -and (Test-Path -LiteralPath $Plan.Sixel)) {
+        # One row less: the picture is drawn a row down (--logo-padding-top,
+        # see the launcher's Show-FFSFetch for why).
         $fit = Get-FFSLogoFit -Path $Plan.Sixel -Dir (Split-Path -Parent $Plan.Sixel) `
-                              -Plan $Plan -Room $room -Rows $rowRoom
+                              -Plan $Plan -Room $room -Rows ($rowRoom - 1)
     }
     $w = 0
     $h = 0
@@ -236,7 +238,7 @@ function global:Show-FFSFetch {
             $narrow = 'is too narrow for the logo beside the frame.'
         } else { $ffArgs += @('--logo', 'none') }
     } elseif ($fit) {
-        $ffArgs += @('--logo-type', 'raw', '--logo', $fit.Path, '--logo-width', $w, '--logo-height', $h, '--logo-print-remaining', 'false')
+        $ffArgs += @('--logo-type', 'raw', '--logo', $fit.Path, '--logo-width', $w, '--logo-height', $h, '--logo-print-remaining', 'false', '--logo-padding-top', '1')
     } elseif ($art) {
         # No room for the picture, or no image protocol to draw it into (a bare
         # console). fastfetch prints a *text* logo file verbatim, so the block art
@@ -259,7 +261,9 @@ function global:Show-FFSFetch {
         $ffArgs += @('--logo', 'Windows11')
     }
     $ffArgs += $Plan.Fit
+    $top = Get-FFSCursorRow
     Invoke-FFSRun -Plan $Plan -FFArgs $ffArgs
+    if ($w -gt 0) { Complete-FFSLogoRows -Top $top -Rows ($h + 1) }
     if ($narrow) {
         Write-Host ''
         Write-Host ('FastFetch Studio: a ' + $cols + '-column window ' + $narrow + ' Widen the window and press Preview again.') -ForegroundColor DarkGray

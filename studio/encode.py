@@ -9,7 +9,7 @@ from studio.state import ARTS_DIR, CELL_PX_DEFAULT, HAVE_PIL, HAVE_SIXEL, PREVIE
 if HAVE_PIL:
     from PIL import Image
 if HAVE_SIXEL:
-    from sixel_codec import encode_sixel, fit_image_cells, render_ansi_art
+    from sixel_codec import encode_sixel, render_ansi_art
 
 
 LOGO_SLACK_COLS = 1
@@ -58,14 +58,15 @@ def ladder_cells(cells_w: int, cells_h: int) -> list[tuple[int, int]]:
 
 
 def fit_logo_cells(im, cells_w: int, cells_h: int, st: dict):
-    """The picture on a `cells_w` x `cells_h` cell canvas, one column clear.
+    """The picture on a canvas `cells_w` cells wide, one column clear.
 
     Two numbers matter here and they are not the same one:
 
-    * the **canvas** is exactly `cells_w` x `cells_h` cells, because that is
-      what the terminal reserves for the raster and what the launcher reads
-      back out of it - a smaller canvas leaves a hole, a bigger one is drawn
-      over the text beside it;
+    * the **canvas** is `cells_w` cells wide and a whole number of rows tall
+      (at most `cells_h`), because that is what the terminal reserves for the
+      raster and what the launcher reads back out of it - a canvas that
+      disagrees with the cells fastfetch is told about leaves a hole or is
+      drawn over the text beside it;
     * the **picture** is fitted into `cells_w - LOGO_SLACK_COLS` columns, so at
       least one empty column separates the last painted pixel from the first
       glyph of the fetch text. fastfetch places that text at
@@ -73,14 +74,25 @@ def fit_logo_cells(im, cells_w: int, cells_h: int, st: dict):
       width up to whole cells; without the slack those two roundings can meet,
       and text written into a sixel's cells is exactly what makes Windows
       Terminal redraw the picture in bands.
+
+    The picture sits in the **top-left** corner, and the canvas is only as
+    many rows tall as the picture paints. Centring it in the full box (what
+    this used to do) put two or three empty rows above a tall picture, so it
+    started below the frame's top line, and as many below it - the box was
+    then taller than the fetch's text, so the prompt landed on the picture's
+    last rows and cut it off flat. The launcher reads the cell size back out
+    of the raster, so a shorter canvas is all it takes for fastfetch to be
+    told the real height.
     """
     cw, ch = logo_cell_px(st)
     cells_w = max(1, int(cells_w))
     cells_h = max(1, int(cells_h))
     inner_w = max(1, cells_w - LOGO_SLACK_COLS)
-    inner = fit_image_cells(im, inner_w, cells_h, cell_px=(cw, ch))
-    canvas = Image.new("RGBA", (cells_w * cw, cells_h * ch), (0, 0, 0, 0))
-    canvas.alpha_composite(inner, (0, 0))
+    pic = im.convert("RGBA")
+    pic.thumbnail((inner_w * cw, cells_h * ch), Image.LANCZOS)
+    rows = max(1, min(cells_h, -(-pic.height // ch)))
+    canvas = Image.new("RGBA", (cells_w * cw, rows * ch), (0, 0, 0, 0))
+    canvas.alpha_composite(pic, (0, 0))
     return canvas
 
 

@@ -178,9 +178,15 @@ def selftest() -> int:
         # exactly the cell box it is placed into, and it is one column short of
         # the cell count fastfetch is told about, so no glyph can be written
         # into the picture's own cells.
-        if (src.width, src.height) != (cells_w * cw, cells_h * ch):
-            print(f"selftest: FAIL raster {src.width}x{src.height} != "
-                  f"{cells_w}x{cells_h} cells of {cw}x{ch} px")
+        # Full width, whole rows, never taller than the box - and no empty rows
+        # above the picture, which is what pushed it below the frame's top line.
+        if (src.width != cells_w * cw or src.height % ch or not 0 < src.height <= cells_h * ch):
+            print(f"selftest: FAIL raster {src.width}x{src.height} is not "
+                  f"{cells_w} cells of {cw}x{ch} px by at most {cells_h} whole rows")
+            return 1
+        top = src.getchannel("A").getbbox()
+        if top is None or top[1] != 0:
+            print(f"selftest: FAIL picture starts at y={top and top[1]}, not at the top of its canvas")
             return 1
         inner_w = (cells_w - LOGO_SLACK_COLS) * cw
         als = src.convert("RGBA").getchannel("A").load()
@@ -205,9 +211,9 @@ def selftest() -> int:
                 print(f"selftest: FAIL ladder variant {name} was not written")
                 return 1
             w3, h3, _ = decode_sixel_pixels(vfile.read_bytes())
-            if (w3, h3) != (vw * cw, vh * ch):
+            if w3 != vw * cw or h3 % ch or not 0 < h3 <= vh * ch:
                 print(f"selftest: FAIL ladder variant {name} is {w3}x{h3} px, "
-                      f"not {vw}x{vh} cells of {cw}x{ch} px ({vw * cw}x{vh * ch})")
+                      f"not {vw} cells of {cw}x{ch} px by at most {vh} whole rows")
                 return 1
         steps = ladder_cells(cells_w, cells_h)
         print(f"selftest: logo ladder ok ({len(steps)} sizes: "

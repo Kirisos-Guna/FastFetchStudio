@@ -53,7 +53,11 @@ options, verification, and uninstall.
   driver, memory, OS age, uptime) get a Nerd Font glyph, tinted with that row's key color.
   The glyph comes from fastfetch's own per-type default rather than being typed into each
   label, so adding a module can never leave a row icon-less. Needs a Nerd Font in your
-  terminal; `fastfetch --key-type string` prints plain labels instead.
+  terminal; `fastfetch --key-type string` prints plain labels instead. **Icons show as `?` in
+  a diamond?** The terminal's font has no Nerd Font glyphs. Install one — e.g. `CascadiaMono.zip`
+  from the [Nerd Fonts releases](https://github.com/ryanoasis/nerd-fonts/releases), which looks
+  like Windows Terminal's default font — then pick **CaskaydiaMono NF** in Windows Terminal →
+  Settings → Defaults → Appearance → Font face.
 
 ## What it generates
 
