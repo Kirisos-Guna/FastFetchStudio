@@ -1488,7 +1488,19 @@ def smoke_icons() -> int:
                        f"expected {KEYED_MODULES}")
 
     ff = _find_fastfetch()
+    # fastfetch leaves out a row it has nothing to say for - Packages on a
+    # machine with no package manager it recognises, say. That is the machine,
+    # not the config, so those modules are not counted against it.
+    silent: list[str] = []
     if ff is not None:
+        for kind in KEYED_MODULES:
+            try:
+                probe = subprocess.run([ff, "--logo", "none", "--pipe", "-s", kind],
+                                       capture_output=True, timeout=60)
+            except subprocess.TimeoutExpired:
+                continue
+            if probe.returncode == 0 and not probe.stdout.strip():
+                silent.append(kind)
         sep = st.get("separator", " : ")
         ansi = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -1521,9 +1533,9 @@ def smoke_icons() -> int:
                 if rows is None:
                     bad.append(f"theme-{i:02d}: fastfetch would not render it ({why})")
                     continue
-                if len(rows) != keyed:
+                if len(rows) != keyed - len(silent):
                     bad.append(f"theme-{i:02d}: fastfetch drew {len(rows)} keyed rows, "
-                               f"expected {keyed}")
+                               f"expected {keyed - len(silent)}")
                 for r in rows:
                     if not _is_pua(next((c for c in r if c != " "), "")):
                         bad.append(f"theme-{i:02d}: row {r.strip()[:40]!r} rendered no icon")
@@ -1536,6 +1548,8 @@ def smoke_icons() -> int:
             print("  ", b)
         return 1
     suffix = "" if ff else " [render skipped: no fastfetch on PATH]"
+    if silent:
+        suffix += f" [rendered nothing on this machine: {', '.join(silent)}]"
     print(f"smoke-icons: ok ({len(themes)} themes; all {keyed} keyed modules carry "
           f"an icon){suffix}")
     return 0

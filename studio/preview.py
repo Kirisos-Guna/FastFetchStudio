@@ -179,7 +179,7 @@ function global:Invoke-FFSRun {
     # Same shape as the launcher's, minus the fallback: a preview has nothing to
     # fall back to, so what it draws is what the launcher would draw.
     param([hashtable]$Plan, [string[]]$FFArgs, [string[]]$FFRetry)
-    foreach ($a in @(,$FFArgs)) { & $Plan.Exe @a }
+    foreach ($a in @(,$FFArgs)) { $null = Invoke-FFSExe -Exe $Plan.Exe -FFArgs $a }
 }
 
 function global:Show-FFSFetch {
@@ -290,6 +290,8 @@ $global:FFSPlan = @{
 
 @@RESIZEGUARD@@
 
+# The preview opens a new window, which starts at the terminal's default size.
+Wait-FFSGridSettled
 Show-FFSFetch -Plan $global:FFSPlan
 if ($global:FFSPlan.Redraw) { Install-FFSResizeGuard }
 

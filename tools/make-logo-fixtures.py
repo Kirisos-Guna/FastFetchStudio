@@ -17,9 +17,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import app            # noqa: E402
-import sixel_codec    # noqa: E402
 from PIL import Image  # noqa: E402
+
+import app  # noqa: E402
+import sixel_codec  # noqa: E402
 
 
 def main() -> int:

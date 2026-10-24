@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from PIL import Image
 
-
 ALPHA_THRESHOLD = 128  # >= paints, < stays transparent (sixel has no partial alpha)
 
 UPPER_HALF = "\u2580"  # fg paints the top pixel of a cell, bg paints the bottom
@@ -53,13 +52,13 @@ def render_ansi_art(im: Image.Image, cells_w: int, cells_h: int) -> list[str]:
             top_on, bot_on = top[3] >= ALPHA_THRESHOLD, bot[3] >= ALPHA_THRESHOLD
             if top_on and bot_on:
                 # Sets both channels, so no reset is needed first.
-                parts.append("\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm%s"
-                             % (top[0], top[1], top[2], bot[0], bot[1], bot[2], UPPER_HALF))
+                parts.append(f"\x1b[38;2;{top[0]};{top[1]};{top[2]}m"
+                             f"\x1b[48;2;{bot[0]};{bot[1]};{bot[2]}m{UPPER_HALF}")
                 painted = True
             elif top_on or bot_on:
                 # Only one channel is known, so clear the other one first.
                 px, glyph = (top, UPPER_HALF) if top_on else (bot, LOWER_HALF)
-                parts.append(RESET + "\x1b[38;2;%d;%d;%dm%s" % (px[0], px[1], px[2], glyph))
+                parts.append(f"{RESET}\x1b[38;2;{px[0]};{px[1]};{px[2]}m{glyph}")
                 painted = True
             else:
                 # A space would inherit whatever background is still active.
