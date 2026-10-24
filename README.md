@@ -1,380 +1,165 @@
 # FastFetch Studio
 
-GUI customizer + random launcher for [fastfetch](https://github.com/fastfetch-cli/fastfetch) on Windows.
-
-Pick images, color theming, and randomization in a small desktop app — every new terminal
-window then shows a **random logo + random color theme** automatically.
+A small Windows app that makes your terminal greet you with [fastfetch](https://github.com/fastfetch-cli/fastfetch)
+— using **your own picture** and **your own colours**, with a random logo and theme each time you
+open a terminal.
 
 ![FastFetch Studio's Gallery tab, showing four imported logo images with one marked as the default](docs/screenshot.png)
 
-## Download
+## Quick start
 
-Grab the standalone exe from [Releases](../../releases) — no Python or other dependencies
-needed. Windows SmartScreen may warn on first run for unsigned exes: **More info → Run anyway**.
+1. **Install fastfetch and hook it into PowerShell** — paste this into PowerShell (no admin needed,
+   safe to run again):
 
-## Set up a fresh machine (one command)
+   ```powershell
+   irm https://raw.githubusercontent.com/Kirisos-Guna/FastFetchStudio/main/setup.ps1 | iex
+   ```
 
-No fastfetch yet, or don't want to touch `$PROFILE` by hand? One script installs fastfetch,
-puts it on your `PATH`, and hooks it into Windows PowerShell 5.1 and PowerShell 7+ — no
-Administrator rights needed, safe to re-run:
+2. **Download `FastFetchStudio.exe`** from [Releases](../../releases) and run it. No install
+   needed. If Windows SmartScreen warns you, click **More info → Run anyway**.
 
-```powershell
-irm https://raw.githubusercontent.com/Kirisos-Guna/FastFetchStudio/main/setup.ps1 | iex
-```
+3. In the app, **add a picture** on the Gallery tab, pick your colours, then click
+   **Apply & Generate**.
 
-It detects which shells you actually have, skips anything already installed, and refuses to
-add a second fastfetch call if your profile already has one. See **[SETUP.md](SETUP.md)** for
-options, verification, and uninstall.
+Open a new terminal — that's it.
 
-## Features
+> **Icons showing as `?`** — see [Icons need a Nerd Font](#icons-need-a-nerd-font).
 
-- **Gallery tab** — upload PNG / JPG / WEBP / GIF / BMP images (auto-converted to PNG into
-  `~\.config\fastfetch\pngs\`), thumbnail grid, per-image size in terminal cells,
-  set a default/fallback logo.
-- **Theme tab** — key colors per module group (OS, packages, terminal, CPU, driver, title),
-  box border style (rounded / double / heavy / ASCII / none) and color, separator text,
-  default logo size, palette-block toggle.
-- **Random tab** — choose what randomizes per terminal open (logo, theme), how often
-  (every window or once per day), and how the logo is drawn (auto / always draw the image /
-  built-in ASCII only). Also whether the fetch redraws itself when the window is resized, which is
-  what keeps the image whole after Alt+Enter — see
-  [Alt+Enter (or any resize) tears the logo into bands](#altenter-or-any-resize-tears-the-logo-into-bands).- **Live preview** — renders the logo to a real sixel image and opens it in a Windows Terminal
-  window, with the same theme and module list the launcher will draw. The window stays
-  open until you close it, so the fetch does not flash past. It opens at whatever size Windows
-  Terminal last used, and resizing it redraws the fetch at the new size — the logo is re-fitted to
-  the room the frame leaves, the same way the real shell does it (see
-  [Alt+Enter tears the logo](#altenter-or-any-resize-tears-the-logo-into-bands)). The app
-  deliberately does not resize your terminal for you: Windows Terminal remembers the last window
-  size, so doing that would change the width of every terminal you open afterwards.
-- **8 palettes** — your exact colors plus 7 hue-rotated variants are generated so
-  randomization has variety.
-- **An icon on every row** — the generated config switches fastfetch's key icons on, so all
-  thirteen labeled modules (chassis, OS, kernel, packages, display, terminal, WM, CPU, GPU,
-  driver, memory, OS age, uptime) get a Nerd Font glyph, tinted with that row's key color.
-  The glyph comes from fastfetch's own per-type default rather than being typed into each
-  label, so adding a module can never leave a row icon-less. Needs a Nerd Font in your
-  terminal; `fastfetch --key-type string` prints plain labels instead. **Icons show as `?` in
-  a diamond?** The terminal's font has no Nerd Font glyphs. Install one — e.g. `CascadiaMono.zip`
-  from the [Nerd Fonts releases](https://github.com/ryanoasis/nerd-fonts/releases), which looks
-  like Windows Terminal's default font — then pick **CaskaydiaMono NF** in Windows Terminal →
-  Settings → Defaults → Appearance → Font face.
+## What you can do
 
-## What it generates
+- **Gallery** — add PNG, JPG, WEBP, GIF or BMP images, set their size, and pick a default.
+- **Theme** — colours for each group of rows, the frame style and colour, and the separator.
+- **Random** — choose what changes each time (logo, colours), how often (every window or once a
+  day), and how the logo is drawn.
+- **Preview in terminal** — see the result in a real Windows Terminal window before you apply.
 
-| File | Purpose |
-|---|---|
-| `~\.config\fastfetch\config.jsonc` | main fastfetch config (original backed up once to `config.backup.jsonc`) |
-| `~\.config\fastfetch\themes\theme-01..08.jsonc` | the 8 palettes |
-| `~\.config\fastfetch\fastfetch-random.ps1` | picks a random theme + logo each run, draws once per shell session, and redraws that same fetch when the window changes size (see [Alt+Enter tears the logo](#altenter-or-any-resize-tears-the-logo-into-bands)). It detects the terminal first — sixel on Windows Terminal (1.22+), WezTerm, foot, contour, mlterm, yaft; the kitty protocol on kitty, WezTerm and Ghostty; block art from `arts\` anywhere else; fastfetch's tinted ASCII logo as the last resort. Written by **Apply & Generate**; `setup.ps1` writes a plain bootstrap here so the profile hook works before the app has ever run |
-| `~\.config\fastfetch\fastfetch-cmd.cmd` | the Command Prompt hook: runs the same launcher from an interactive `cmd.exe` window (see [Show it in Command Prompt too](#show-it-in-command-prompt-too)) |
-| `~\.config\fastfetch\arts\*.art` | your logos pre-rendered as truecolour block art, for terminals that can display no image protocol |
-| `~\.config\fastfetch\gui\studio-state.json` | app state (gallery, colors, settings) |
-| `~\.config\fastfetch\gui\preview.ps1` | the payload the **Preview in terminal** button runs; regenerated on every click |
+Every row gets an icon, and 8 colour themes are made from your colours so the random pick has
+variety.
 
 ## Hook it into PowerShell (one time)
 
-Paste this into your `$PROFILE`, replacing any old fastfetch block:
+`setup.ps1` (step 1 above) does this for you. To do it by hand, paste this into your `$PROFILE`
+(replace any old fastfetch line):
 
 ```powershell
 $ffLauncher = "$env:USERPROFILE\.config\fastfetch\fastfetch-random.ps1"
 if (Test-Path -LiteralPath $ffLauncher) { & $ffLauncher } else { fastfetch.exe }
 ```
 
-The `Test-Path` guard matters: `fastfetch-random.ps1` is a *generated* file. A bare
-`& "$env:USERPROFILE\.config\fastfetch\fastfetch-random.ps1"` works once the file exists, but
-on a machine where it does not yet, every new shell opens with
-
-> `& : The term '...\fastfetch-random.ps1' is not recognized as the name of a cmdlet, function, script file, or operable program.`
-
-A copy-pasteable snippet with a Copy button is also available inside the app (Theme tab).
-
-Or let [setup.ps1](SETUP.md) do the download, the profile edit, *and* write the launcher for
-you — including PowerShell 7+, which the app itself does not configure.
+The app's Theme tab has the same snippet with a Copy button.
 
 ## Show it in Command Prompt too
 
-`cmd.exe` has no profile script, but it runs the per-user `AutoRun` command at the start of
-every session. **Apply & Generate** writes `~\.config\fastfetch\fastfetch-cmd.cmd`, which draws
-the same fetch (same logo, theme and window fitting) through the PowerShell launcher. Register
-it once from PowerShell:
+Run this once in PowerShell. It is safe to run again, and it keeps anything already set up there
+(such as Clink):
 
 ```powershell
 $key  = 'HKCU:\Software\Microsoft\Command Processor'
 $hook = '@if exist "%USERPROFILE%\.config\fastfetch\fastfetch-cmd.cmd" call "%USERPROFILE%\.config\fastfetch\fastfetch-cmd.cmd"'
-if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }   # absent on a fresh account
+if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
 $old = (Get-ItemProperty -Path $key -Name AutoRun -ErrorAction SilentlyContinue).AutoRun
-if ($old -match 'fastfetch-cmd') { $hook = $old }                 # already there: leave it be
-elseif ($old) { $hook = "$old & $hook" }                           # keep Clink, Conda, ...
+if ($old -match 'fastfetch-cmd') { $hook = $old } elseif ($old) { $hook = "$old & $hook" }
 Set-ItemProperty -Path $key -Name AutoRun -Value $hook
 ```
 
-Safe to re-run: an existing `AutoRun` (Clink, Conda) is kept and the hook chained after it, and
-a second run does not add the hook twice. The key is created only when it is missing:
-`New-Item -Force` on a key that already exists would wipe the values in it.
+It only draws in a Command Prompt window you opened yourself — never in the background `cmd`
+runs that scripts and tools start. Each new window takes about half a second longer to open.
 
-- **Only interactive windows draw.** `AutoRun` also runs for every `cmd /c …` that scripts, git
-  hooks and build tools start in the background; the hook skips those, so their output stays
-  clean. `cmd /k` and a plain `cmd` window draw.
-- **No `@echo off`.** AutoRun runs inside the interactive shell, so turning echo off there would
-  hide the prompt for the whole session; every line of the hook carries its own `@` instead.
-- **Turn it off** for one window with `set FASTFETCH_STUDIO_DISABLE=1` before starting a nested
-  `cmd`, or for good with
-  `Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Command Processor' -Name AutoRun`.
-- It costs a PowerShell start (about half a second) per new Command Prompt window.
+To turn it off:
 
-### My logo doesn't show — I get the ASCII Windows logo
-
-Only some terminals can display an image, and image bytes sent to one that cannot render them
-print garbage. So the launcher works out which terminal it is in first:
-
-| Terminal | How your logo is drawn |
-|---|---|
-| Windows Terminal (1.22+), WezTerm, foot, contour, mlterm, yaft | your image, over sixel |
-| kitty, WezTerm, Ghostty | your image, over the kitty protocol |
-| everything else — classic conhost, and the VS Code terminal with `terminal.integrated.gpuAcceleration` off | your image as **block art** |
-| no images uploaded, or *Never* selected on the Random tab | fastfetch's built-in ASCII Windows logo |
-
-The terminal is identified from its environment variables first (`WT_SESSION`, `TERM_PROGRAM`,
-`WEZTERM_PANE`, …) and, failing those, from the process tree — see
-[the logo is sharp in one window and blocky in another](#the-logo-is-sharp-in-one-window-and-blocky-in-another).
-
-Block art is your picture drawn with half-block characters in true colour — one terminal row
-per two image rows, so it carries twice the resolution a single character per pixel would. It
-is coarser than a real image, but it is *your* logo, and it is the only thing that can appear
-in a terminal that supports no image protocol at all.
-
-If even the block art is unavailable, the launcher says so rather than swapping your logo out
-in silence:
-
-> FastFetch Studio: no image support detected in the VS Code terminal, so the built-in logo was drawn.
-> force it: $env:FASTFETCH_STUDIO_LOGO = 'image'   (Windows Terminal 1.22+ draws it as-is)
-
-Ways out:
-
-- **Use Windows Terminal 1.22 or newer** for the real image, with no configuration.
-- **Force it** — *Random* tab → **How the logo is drawn** → *Always draw the image*. For a
-  single shell without changing the setting, set `$env:FASTFETCH_STUDIO_LOGO` to `image`
-  (force the picture) or `builtin` (force the ASCII logo) before the fetch runs.
-
-### The logo is sharp in one window and blocky in another
-
-Same terminal, same picture, two different renders: the crisp image in one window, block art in
-the next, with the `Terminal` line reading *Windows Terminal* in both.
-
-Windows Terminal sets `WT_SESSION` in the shells **it starts**, but not in every session it
-*shows*. When Windows Terminal is the default terminal application, a console created by some
-other process is merely displayed by it and never gets the variable; an elevated shell, or one
-started by a tool that rebuilds the environment, loses it as well. The terminal is still Windows
-Terminal in all of those cases — and fastfetch, which identifies its host from the process tree,
-says so on the `Terminal` line. An environment-only check therefore made the launcher disagree
-with the very fetch it was drawing: it concluded "no image support" and fell back to block art.
-
-The launcher now also walks the process tree for `WindowsTerminal.exe`, so a Windows Terminal
-session without `WT_SESSION` still gets the sixel. That check runs **after** the terminals that
-name themselves (VS Code, Zed, WezTerm, kitty, Ghostty), because an editor opened from a Windows
-Terminal tab keeps `WindowsTerminal.exe` in its process tree while its own terminal still cannot
-draw sixel. A console Windows Terminal merely *hosts* has no `WindowsTerminal.exe` above it, so
-it keeps the block art — the same verdict fastfetch reaches when it calls that terminal `dumb`.
-
-### The fetch wraps and breaks in a narrow window (a tiled pane, a small screen)
-
-Split the terminal into four panes, or work in a window narrower than usual, and the fetch falls
-apart: the frame's border lands on the *next* row, a long value is split mid-word, and the logo is
-cut off by the pane edge.
-
-The logo is drawn **beside** a frame that is a fixed number of columns wide, and fastfetch does not
-know the frame is there. At the default settings the pair needs `28 + 4 + 46 = 78` columns, so a
-63-column pane has nowhere to put it and fastfetch wraps whatever does not fit — which takes the
-border with it. Three things fix that:
-
-- **fastfetch is told not to wrap** (`--disable-linewrap true`). An over-long row is clipped at the
-  window edge instead of pushing the frame onto the next line. Every row stays on its own line.
-- **The logo is drawn from a ladder of pre-encoded sizes** — the same picture at 100%, 86%, 72%,
-  58% and 44% of the configured cells — and the launcher draws the largest one that fits both
-  `window − frame − 1 − 4` columns and the window's rows. The `4` is fastfetch's own logo padding,
-  which sits between the picture and the text; it is easy to forget and, without it, the frame's
-  last three columns are still pushed off the edge. Choosing a smaller *file* is the point:
-  `--logo-width`/`--logo-height` only say how many cells the picture occupies, so a "fitted" number
-  leaves the picture where it is and moves the fetch's text on top of it — and text inside the cells
-  a sixel covers is what Windows Terminal redraws in bands. When nothing in the ladder fits, the
-  block art (pure text, so it cannot tear) is drawn from its own ladder, and below that the frame is
-  drawn on its own with a one-line note saying why.
-- **Every draw records what it did** in `gui\last-draw.txt`: the window it found, the room it had,
-  which file it drew and at what cell size. "Where did my logo go?" is then a question about a file
-  rather than about a screenshot.
-- **The frame is measured against this machine's own rows** when you press *Apply & Generate*, and
-  widened if the longest row would hang outside it (clamped to 40–64). A machine with a longer GPU
-  name therefore gets a frame that contains it, rather than a row that spills past the border.
-
-The block-art fallback cannot be scaled either — fastfetch prints a text logo file verbatim, so
-`--logo-width` does nothing to it — so it is pre-rendered at every step of the ladder too, and drawn
-only when the step fits beside the frame.
-
-The CPU row is deliberately the model name alone (`Intel(R) Core(TM) Ultra 7 258V`, not
-`… @ 4.80 GHz`). The boost clock made it the widest row in the fetch, and every column the rows
-take is a column the picture does not get.
-
-Measured in real Windows Terminal windows, running the installed launcher, with the frame's own
-characters counted back out of the console screen buffer:
-
-| window | logo | frame rule | logo + frame |
-| --- | --- | --- | --- |
-| 69 columns | 22 columns | 46, complete | 68 — fits |
-| 61 columns | 14 columns | 46, complete | 60 — fits |
-| 53 columns | dropped | 46, complete | 46 — fits |
-| 61 columns, logo off | — | 46, complete | 46 — fits |
-
-A window narrower than the frame itself (46 columns) will still clip the frame's right corner:
-the frame is a fixed rule baked into the themes, and there is nothing left to give.
-
-### Alt+Enter (or any resize) tears the logo into bands
-
-This had two causes, and both were ours rather than the terminal's.
-
-**The picture's size was a fiction.** A sixel is placed by its raster size in pixels, while
-`--logo-width`/`--logo-height` only tell fastfetch how many cells it thinks the picture occupies.
-When the window was narrower than the configured logo, the launcher handed fastfetch a *smaller*
-number than the picture really was — so fastfetch laid its text out where the picture already is,
-and text written into the cells a sixel covers is what makes Windows Terminal redraw the image in
-bands, with slivers of glyphs punched through it. That is the shape most people see, and it needs no
-resize at all: a terminal snapped to half a 1440x900 screen is 70 columns, the frame takes 46 plus
-fastfetch's own 4 columns of padding, so 20 columns are left for a picture that wants 28. Since
-v1.1.16 those two flags are never rewritten — the launcher draws a smaller pre-encoded file from the
-ladder instead, and the flags always describe the file it is actually drawing.
-
-**The torn picture could not be taken off the screen.** The v1.1.15 repair cleared the text buffer
-before redrawing, and in Windows Terminal 1.24 `[Console]::Clear()` does not remove a sixel at all —
-the image lives in its own layer, not in the buffer. Every resize therefore left the broken copy on
-screen and painted a second fetch over it, which is exactly the doubled, banded logo the repair was
-meant to fix. What does remove it is scrolling the lines it was drawn on out of the viewport, and
-that is what the repair does now.
-
-Alt+Enter is Windows Terminal's `toggleFullscreen`, and going fullscreen changes the window's
-*grid* — both its columns and its rows. The logo is a real image, rasterized into the terminal
-buffer at the shape it had when fastfetch ran and anchored to the cells it was drawn over, so when
-the grid changes the terminal reflows the text around it and the picture comes apart into bands,
-leaving slivers of the frame's own rows interleaved with slices of the image. F11, dragging the
-window edge and Ctrl+scroll zooming the font all do the same thing. The fetch's *text* is fine — it
-is only the image that cannot follow a reflow.
-
-Nothing running in the terminal can react while that happens: Windows has no `SIGWINCH`, and the
-only console signal it does have (`WINDOW_BUFFER_SIZE_EVENT`) has to be read out of the input
-buffer, which PSReadLine owns. So the launcher notices afterwards instead. The prompt compares the
-grid the fetch was drawn at with the grid now, and when they differ it scrolls the torn copy off the
-screen — the only thing that removes a sixel — and draws the same fetch again: same theme, same
-picture, re-fitted to the new window by picking from the size ladder.
-
-- **On by default.** *Random* tab → **Re-draw the fetch when the window is resized**. With it off,
-  a resized window keeps the torn picture until a new terminal is opened. Either way only the
-  visible screen is erased; the scrollback above it is left alone.
-- **The repair happens on its own** — within about half a second of the window settling at its new
-  size, while the prompt sits idle (PSReadLine's idle event); nothing has to be typed. It never
-  touches a half-typed command line, and it stops once you have run a command, so a resize
-  can never wipe a command's output to redraw a logo. `Redraw-Fetch` brings the fetch back by
-  hand at any time; the generated launcher defines it, so it is there whenever the fetch is.
-- **A new window is measured once it has its real size.** Windows Terminal starts every shell at
-  its default 120 × 30 grid and resizes it a few hundred milliseconds later (sooner or later with
-  a remembered size, a snapped window or a tiling tool). The first draw waits for that, at the
-  first prompt rather than in the profile, so PowerShell 5.1's "Loading personal and system
-  profiles took …ms" note is not triggered by it.
-- **The preview window repairs itself too**, so the window you resize while testing behaves like the
-  real one.
-- **A resize never re-randomizes.** It redraws the theme and picture that shell already had, so a
-  resized window cannot suddenly look like a different machine.
-
-If the picture is still wrong *after* a redraw at the new size, the tear was not the buffer at all
-but Windows Terminal's DirectX renderer — a known problem on some Intel GPUs when entering and
-leaving fullscreen ([microsoft/terminal#14865](https://github.com/microsoft/terminal/issues/14865)).
-Update Windows Terminal and your GPU driver, and if it persists add this to your Windows Terminal
-`settings.json`:
-
-```json
-"experimental.rendering.forceFullRepaint": true
+```powershell
+Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Command Processor' -Name AutoRun
 ```
 
-If you would rather not have Alt+Enter change the window size at all — it is the easiest of those
-gestures to hit by accident — unbind it in Windows Terminal's `settings.json` (`actions`), leaving
-fullscreen on F11:
+## Icons need a Nerd Font
 
-```json
-{ "command": "unbound", "keys": "alt+enter" }
-```
+The row icons come from a [Nerd Font](https://www.nerdfonts.com/). Without one, every icon shows
+as `?` in a diamond.
 
-### The fetch prints twice, in two different colours
+1. Download `CascadiaMono.zip` from the
+   [Nerd Fonts releases](https://github.com/ryanoasis/nerd-fonts/releases) (it looks like Windows
+   Terminal's default font).
+2. Unzip it, select the `CaskaydiaMonoNerdFont-*.ttf` files, right-click → **Install**.
+3. In Windows Terminal: **Settings → Defaults → Appearance → Font face → CaskaydiaMono Nerd Font**.
+4. Close **every** Windows Terminal window and open it again.
 
-Your `$PROFILE` has two fastfetch calls in it — most often `setup.ps1`'s managed block *plus*
-the snippet above pasted in afterwards without removing it. Each call picks its own random
-theme, so you get the fetch twice in two colour schemes.
+## Troubleshooting
 
-The launcher now draws **once per shell session**, so a second call is a no-op. To stop it
-being called at all, delete whichever of the two you do not want — `setup.ps1 -Uninstall`
-removes its own block, or delete the pasted lines by hand.
-
-### Preview in terminal fails with `Error 2147942402 (0x80070002)`
-
-Fixed in v1.1.11. The button used to hand Windows Terminal a
-`powershell -Command "$env:WT_SESSION=…; & fastfetch …"` one-liner, and Windows Terminal
-splits its command line on `;` **even inside a quoted argument** — it cut the line in two and
-tried to launch the second half, which began with `&`, as a program:
-
-```
-[error 2147942402 (0x80070002) when launching `" & "$env:USERPROFILE\.local\bin\fastfetch.exe" …`]
-The system cannot find the file specified.
-```
-
-The payload is now a generated file (`gui\preview.ps1`) launched with `-File`, so there is
-nothing on the `wt` command line for that parser to split. Update to v1.1.11 or later.
-
-### Prerequisite: the execution policy must allow scripts
-
-On a fresh Windows install the effective policy is `Restricted`, which blocks `.ps1` files
-**and profiles**. Both the pasted line and the profile hook stay silent until you allow
-signed-local scripts. This is user-scoped — no Administrator rights needed:
+**Nothing shows when I open PowerShell.**
+Windows blocks scripts by default. Allow them for your user (no admin needed), then open a new
+window:
 
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
-Check it with `Get-ExecutionPolicy`. `setup.ps1 -FixExecutionPolicy` will do it for you.
-If the policy is enforced by Group Policy, only your administrator can change it.
+**I see a Windows logo or a blocky picture instead of my image.**
+Only some terminals can show real images. Use **Windows Terminal 1.22 or newer** (also works:
+WezTerm, kitty, Ghostty). Other terminals get a block-character version of your picture. To
+force the image anyway: Random tab → **Always draw the image, even in an unrecognised terminal**.
+
+**The logo is missing or smaller in a narrow window.**
+That's on purpose: the logo shrinks, or is left out, so the fetch never breaks. Widen the window.
+`~\.config\fastfetch\gui\last-draw.txt` says what was drawn and why.
+
+**The fetch shows up twice.**
+Your `$PROFILE` has two fastfetch lines. Delete one (`setup.ps1 -Uninstall` removes the one setup
+added).
+
+### Alt+Enter (or any resize) tears the logo into bands
+
+The fetch redraws itself at the new size within about half a second — you don't need to type
+anything. It stops doing this once you have run a command, so it never wipes your output; type
+`Redraw-Fetch` to bring it back any time. You can turn it off on the Random tab
+(**Re-draw the fetch when the window is resized**).
+
+If the picture still looks broken after the redraw, update Windows Terminal and your graphics
+driver. If that doesn't help, add this to Windows Terminal's `settings.json`:
+
+```json
+"experimental.rendering.forceFullRepaint": true
+```
+
+## Files it creates
+
+Everything lives in `~\.config\fastfetch\`:
+
+| File | What it is |
+|---|---|
+| `config.jsonc` | the fastfetch settings (your original is saved once as `config.backup.jsonc`) |
+| `themes\` | the 8 colour themes |
+| `fastfetch-random.ps1` | the script that draws the fetch in PowerShell |
+| `fastfetch-cmd.cmd` | the same, for Command Prompt |
+| `pngs\`, `sixels\`, `arts\` | your pictures and their pre-made versions for the terminal |
+| `gui\` | the app's own settings |
+
+## Uninstall
+
+1. Run `.\setup.ps1 -Uninstall` (add `-RemoveBinary` to remove fastfetch too).
+2. If you set up Command Prompt, run the "turn it off" command above.
+3. Delete `~\.config\fastfetch\` — or keep your pictures in `pngs\` and copy
+   `config.backup.jsonc` back over `config.jsonc`.
+
+More setup options: [SETUP.md](SETUP.md).
 
 ## Build from source
 
-Requires Python 3.10+ on Windows (CI pins 3.12).
+Needs Python 3.10+ on Windows.
 
 ```bat
 build.bat
 ```
 
-That installs `requirements-dev.txt`, runs the pytest suite, and builds
-`dist\FastFetchStudio.exe` from `FastFetchStudio.spec` (one portable file,
-version single-sourced from `studio.__version__`). The GitHub Actions workflow
-(`.github/workflows/build.yml`) runs pytest + ruff, builds, and attaches the
-exe to releases automatically.
-
-Developer setup:
+This runs the tests and builds `dist\FastFetchStudio.exe`. For development:
 
 ```bat
 pip install -r requirements-dev.txt
-python -m pytest tests/ -v
-python -m ruff check studio/ app.py tests/ --config ruff.toml
+python -m pytest tests/
+python -m ruff check .
 ```
 
-Core logic lives in `studio/` (`state`, `config_build`, `themes`, `images`,
-`encode`, `launcher`, `metrics`, `preview`); `app.py` is the thin tkinter shell
-keeping the `app.generate_launcher` / `app.write_preview_script` /
-`app.preview_argv` compatibility used by CI probes.
-
-## Uninstall
-
-`.\setup.ps1 -Uninstall` removes the managed `$PROFILE` hook and the bootstrap launcher
-(add `-RemoveBinary` to delete the fastfetch binary too). It leaves a launcher that
-FastFetch Studio generated, since that is your own configuration.
-
-To do it by hand: delete `~\.config\fastfetch\themes\`, `fastfetch-random.ps1`,
-`fastfetch-cmd.cmd`, the `gui\` folder, and restore `config.backup.jsonc` over `config.jsonc`.
-Uploaded images stay in `pngs\`. If you registered the Command Prompt hook, also remove its
-`AutoRun` value (see [Show it in Command Prompt too](#show-it-in-command-prompt-too)).
+The app code is in `studio/`; `app.py` is the window. Pushing a `v*` tag builds the exe and
+publishes a release.
 
 ## License
 
