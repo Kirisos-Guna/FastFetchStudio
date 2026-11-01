@@ -17,6 +17,7 @@ Build exe: build.bat (PyInstaller --onefile --noconsole).
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import re
@@ -27,6 +28,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+from ctypes import wintypes
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter import font as tkfont
@@ -667,10 +669,43 @@ def clamp_scroll(cv: tk.Canvas) -> None:
     cv.yview_moveto((min(max(top, lo), hi) - y0) / max(1.0, y1 - y0))
 
 
+WM_SETICON = 0x0080
+ICON_SMALL = 0
+ICON_BIG = 1
+IMAGE_ICON = 1
+LR_LOADFROMFILE = 0x0010
+
+
 def app_icon_path() -> Path:
     """The window icon: next to app.py, or unpacked by PyInstaller when frozen."""
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     return base / "assets" / "logo.ico"
+
+
+def set_native_icons(hwnd: int, path: Path) -> bool:
+    """Give a window its icons at full resolution, the way the shell wants them.
+
+    iconbitmap only hands Windows one small icon, which the taskbar then
+    stretches - on a 200% display that is the blurry logo. WM_SETICON takes the
+    large frame directly and lets the shell scale it down instead of up.
+    """
+    if sys.platform != "win32":
+        return False
+    user32 = ctypes.windll.user32
+    user32.LoadImageW.argtypes = (wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                                  ctypes.c_int, ctypes.c_int, wintypes.UINT)
+    user32.LoadImageW.restype = wintypes.HANDLE
+    user32.SendMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM,
+                                    wintypes.LPARAM)
+    user32.SendMessageW.restype = ctypes.c_ssize_t
+    ok = True
+    for which, size in ((ICON_BIG, 256), (ICON_SMALL, 48)):
+        icon = user32.LoadImageW(None, str(path), IMAGE_ICON, size, size, LR_LOADFROMFILE)
+        if icon:
+            user32.SendMessageW(hwnd, WM_SETICON, which, icon)
+        else:
+            ok = False
+    return ok
 
 
 class App(tk.Tk):
@@ -683,6 +718,8 @@ class App(tk.Tk):
             self.iconbitmap(default=str(app_icon_path()))
         except tk.TclError:
             pass
+        # Tk's outer frame does not exist until just after the window is shown.
+        self._icon_bind = self.bind("<Map>", self._on_first_map, add="+")
         self.geometry("880x720")
         self.minsize(760, 620)
         self.configure(bg=BG)
@@ -694,10 +731,7 @@ class App(tk.Tk):
 
         head = tk.Frame(self, bg=BG)
         head.pack(fill="x", padx=16, pady=(12, 2))
-        dot = tk.Canvas(head, width=10, height=10, bg=BG, highlightthickness=0)
-        dot.create_oval(1, 1, 9, 9, fill=ACCENT, outline="")
-        dot.pack(side="left")
-        tk.Label(head, text=" FastFetch Studio", bg=BG, fg=FG,
+        tk.Label(head, text="FastFetch Studio", bg=BG, fg=FG,
                  font=("Segoe UI Semibold", 13)).pack(side="left")
         tk.Label(head, text="random fetch, your way", bg=BG, fg=MUTED,
                  font=FONT_SMALL).pack(side="left", padx=(10, 0), pady=(5, 0))
@@ -749,6 +783,16 @@ class App(tk.Tk):
         if not STATE["gallery"]:
             self.after(0, self._seed_gallery, True)
         self.after(0, self.refresh_gallery)
+
+    def _on_first_map(self, _event=None):
+        self.unbind("<Map>", self._icon_bind)
+        self.after(100, self._sharpen_taskbar_icon)
+
+    def _sharpen_taskbar_icon(self):
+        try:
+            set_native_icons(int(self.wm_frame(), 16), app_icon_path())
+        except (AttributeError, OSError, ValueError):
+            pass    # not Windows, or no icon file: the app runs without it
 
     def _show_tab(self, name: str):
         self._current_tab = name

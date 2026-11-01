@@ -4,6 +4,11 @@ A small Windows app that makes your terminal greet you with [fastfetch](https://
 — using **your own picture** and **your own colours**, with a random logo and theme each time you
 open a terminal.
 
+<p>
+  <img src="docs/fetch/taiga.png" alt="A terminal showing fastfetch with an anime character as the logo" width="49%">
+  <img src="docs/fetch/cat.png" alt="A terminal showing fastfetch with a girl holding a white cat as the logo" width="49%">
+</p>
+
 ![FastFetch Studio's Gallery tab, showing four imported logo images with one marked as the default](docs/screenshot.png)
 
 ## Quick start
