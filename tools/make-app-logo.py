@@ -16,7 +16,8 @@ from PIL import Image, ImageChops, ImageDraw
 ROOT = Path(__file__).resolve().parents[1]
 SIZE = 1024
 SCALE = 4       # supersampled, then reduced, for clean edges
-ICO_SIZES = [(n, n) for n in (16, 24, 32, 48, 64, 128, 256)]
+SMALL_SIZES = (16, 20, 24, 32, 40)      # drawn from the simplified mark
+LARGE_SIZES = (48, 64, 128, 256)
 
 BG_TOP = (36, 44, 66)
 BG_BOTTOM = (14, 16, 22)
@@ -82,12 +83,45 @@ def draw() -> Image.Image:
     return out.resize((SIZE, SIZE), Image.LANCZOS)
 
 
+def draw_small() -> Image.Image:
+    """The same mark for tiny sizes: fills the tile, three thick rows, one hill.
+
+    A reduced copy of the full logo smears at 16-32 px because its rows and gaps
+    fall between pixels. Everything here sits on a 64-unit grid - one pixel at
+    16 px - so the edges stay hard.
+    """
+    size = s(SIZE)
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    out.paste(gradient(size, BG_TOP, BG_BOTTOM), (0, 0), rounded_mask(size, (0, 0, 1024, 1024), 192))
+
+    pic_mask = rounded_mask(size, (128, 192, 512, 832), 64)
+    out.paste(gradient(size, PICTURE_FROM, PICTURE_TO, diagonal=True), (0, 0), pic_mask)
+    scene = Image.new("L", (size, size), 0)
+    d = ImageDraw.Draw(scene)
+    d.ellipse([s(v) for v in (320, 256, 448, 384)], fill=255)
+    d.polygon([(s(x), s(y)) for x, y in ((128, 832), (128, 640), (288, 448), (512, 704),
+                                         (512, 832))], fill=255)
+    out.paste(Image.new("RGB", (size, size), (255, 255, 255)), (0, 0),
+              ImageChops.multiply(scene, pic_mask))
+
+    d = ImageDraw.Draw(out)
+    for (colour, right), y in zip(((ROWS[0][0], 896), (ROWS[1][0], 832), (ROWS[2][0], 896)),
+                                  (192, 448, 704)):
+        d.rounded_rectangle([s(576), s(y), s(right), s(y + 128)], radius=s(48),
+                            fill=colour + (255,))
+    return out.resize((SIZE, SIZE), Image.LANCZOS)
+
+
 def main() -> int:
     logo = draw()
+    small = draw_small()
     assets = ROOT / "assets"
     assets.mkdir(exist_ok=True)
     logo.save(assets / "logo.png", optimize=True)
-    logo.save(assets / "logo.ico", sizes=ICO_SIZES)
+    frames = [small.resize((n, n), Image.LANCZOS) for n in SMALL_SIZES]
+    frames += [logo.resize((n, n), Image.LANCZOS) for n in LARGE_SIZES]
+    logo.save(assets / "logo.ico", format="ICO", append_images=frames,
+              sizes=[(n, n) for n in SMALL_SIZES + LARGE_SIZES])
     store = ROOT / "docs" / "store"
     store.mkdir(parents=True, exist_ok=True)
     logo.resize((512, 512), Image.LANCZOS).save(store / "icon.png", optimize=True)
