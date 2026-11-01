@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for FastFetch Studio 1.0.3 (single-file, no console)."""
+"""PyInstaller spec for FastFetch Studio 1.0.4 (single-file, no console)."""
 from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
@@ -8,7 +8,7 @@ a = Analysis(
     ["app.py"],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[("assets/logo.ico", "assets")],
     hiddenimports=["tkinter", "PIL", "PIL.ImageTk"] + collect_submodules("PIL"),
     hookspath=[],
     hooksconfig={},
@@ -38,4 +38,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon="assets/logo.ico",
 )
