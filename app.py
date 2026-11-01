@@ -667,10 +667,22 @@ def clamp_scroll(cv: tk.Canvas) -> None:
     cv.yview_moveto((min(max(top, lo), hi) - y0) / max(1.0, y1 - y0))
 
 
+def app_icon_path() -> Path:
+    """The window icon: next to app.py, or unpacked by PyInstaller when frozen."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / "assets" / "logo.ico"
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("FastFetch Studio")
+        # default= so the app's dialogs carry the logo as well. A missing file
+        # only costs the icon, never the app.
+        try:
+            self.iconbitmap(default=str(app_icon_path()))
+        except tk.TclError:
+            pass
         self.geometry("880x720")
         self.minsize(760, 620)
         self.configure(bg=BG)
